@@ -1,0 +1,10 @@
+server/.env
+server/node_modules/
+server/dist/
+server/storage/*.sqlite
+server/storage/*.sqlite-*
+server/storage/*.db
+mobile/.env
+mobile/node_modules/
+mobile/.expo/
+mobile/dist/

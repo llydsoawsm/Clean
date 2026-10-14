@@ -5,20 +5,24 @@
     "version": "0.1.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
-    "newArchEnabled": true,
     "scheme": "clean",
     "description": "Offline-first laundry shop management — Clean",
-    "primaryColor": "#172554",
+    "primaryColor": "#1d4ed8",
     "icon": "./assets/icon.png",
     "splash": {
       "image": "./assets/splash.png",
       "resizeMode": "contain",
-      "backgroundColor": "#f4f6fb"
+      "backgroundColor": "#f8fafc"
     },
     "assetBundlePatterns": ["**/*"],
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.clean.laundry",
+      "splash": {
+        "image": "./assets/splash.png",
+        "resizeMode": "contain",
+        "backgroundColor": "#f8fafc"
+      },
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       }
@@ -26,10 +30,14 @@
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#f4f6fb"
+        "backgroundColor": "#f8fafc"
       },
-      "package": "com.clean.laundry",
-      "edgeToEdgeEnabled": true
+      "splash": {
+        "image": "./assets/splash.png",
+        "resizeMode": "contain",
+        "backgroundColor": "#f8fafc"
+      },
+      "package": "com.clean.laundry"
     },
     "web": {
       "favicon": "./assets/favicon.png",

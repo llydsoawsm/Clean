@@ -15,6 +15,8 @@ export function useDbInit(): DbInitState {
     (async () => {
       try {
         await initDatabase();
+        const { ensureSeedData } = await import('@/db/seedDemo');
+        await ensureSeedData().catch((err) => console.warn('Seed fallback:', err));
         if (!cancelled) setState({ status: 'ready' });
       } catch (e) {
         if (!cancelled) setState({ status: 'error', message: e instanceof Error ? e.message : String(e) });

@@ -6,9 +6,10 @@ import { shopsRouter } from './modules/shops/shops.routes';
 import { customersRouter } from './modules/customers/customers.routes';
 import { servicesRouter } from './modules/services/services.routes';
 import { ordersRouter } from './modules/orders/orders.routes';
-import { paymentsRouter } from './modules/payments/payments.routes';
-import { reportsRouter } from './modules/reports/reports.routes';
-import { syncRouter } from './modules/sync/sync.routes';
+// --- Milestone 60%: Commented out non-core modules (Payments, Reports, Sync) ---
+// import { paymentsRouter } from './modules/payments/payments.routes';
+// import { reportsRouter } from './modules/reports/reports.routes';
+// import { syncRouter } from './modules/sync/sync.routes';
 
 export const app = express();
 
@@ -25,7 +26,8 @@ app.use('/api/v1/shops', shopsRouter);
 app.use('/api/v1/customers', customersRouter);
 app.use('/api/v1/services', servicesRouter);
 app.use('/api/v1/orders', ordersRouter);
-app.use('/api/v1/payments', paymentsRouter);
-app.use('/api/v1/reports', reportsRouter);
-app.use('/api/v1/sync', syncRouter);
+// --- Milestone 60%: Commented out non-core routes ---
+// app.use('/api/v1/payments', paymentsRouter);
+// app.use('/api/v1/reports', reportsRouter);
+// app.use('/api/v1/sync', syncRouter);
 app.use(errorHandler);

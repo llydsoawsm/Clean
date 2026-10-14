@@ -10,97 +10,139 @@ import {
   View,
   Alert,
 } from 'react-native';
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '@/context/AuthContext';
-import { searchCustomers } from '@/db/repositories/customers';
-import { listServices } from '@/db/repositories/services';
-import { createOrder } from '@/db/repositories/orders';
 import type { CustomerRow, ServiceRow } from '@/db/types';
 import { calcBaseCost, calcBalance, calcLoads, calcTotal, derivePaymentStatus, formatPHP } from '@/utils/money';
+import { customerStore, CustomerItem } from '@/store/customerStore';
+import { orderStore } from '@/store/orderStore';
+import { serviceStore, LocalService } from '@/store/serviceStore';
 
 export default function ReceiveScreen() {
-  const { state } = useAuth();
-  const shopId = state.status === 'authenticated' ? state.session.shop.id : null;
+  const { customerId } = useLocalSearchParams<{ customerId?: string }>();
 
-  // Customer
+  // No customer is picked automatically
+  const [selectedCustomer, setSelectedCustomer] = useState<CustomerItem | null>(() => {
+    if (customerId) {
+      return customerStore.getById(customerId) ?? null;
+    }
+    return null;
+  });
+
   const [customerQuery, setCustomerQuery] = useState('');
-  const [customerResults, setCustomerResults] = useState<CustomerRow[]>([]);
-  const [selectedCustomer, setSelectedCustomer] = useState<CustomerRow | null>(null);
-  const [loadingCustomers, setLoadingCustomers] = useState(false);
+  const [customerResults, setCustomerResults] = useState<CustomerItem[]>(customerStore.getAll());
 
-  // Services
-  const [services, setServices] = useState<ServiceRow[]>([]);
-  const [selectedService, setSelectedService] = useState<ServiceRow | null>(null);
-  const [loadingServices, setLoadingServices] = useState(true);
+  useEffect(() => {
+    const unsub = customerStore.subscribe(() => {
+      setCustomerResults(customerStore.search(customerQuery));
+    });
+    return unsub;
+  }, [customerQuery]);
 
-  // Inputs
-  const [weightKg, setWeightKg] = useState(''); // for per_kg: e.g., 5.5
-  const [quantity, setQuantity] = useState(''); // for per_piece
+  useEffect(() => {
+    setCustomerResults(customerStore.search(customerQuery));
+  }, [customerQuery]);
+
+  useEffect(() => {
+    if (customerId) {
+      const found = customerStore.getById(customerId);
+      if (found) setSelectedCustomer(found);
+    }
+  }, [customerId]);
+
+  const [services, setServices] = useState<LocalService[]>(serviceStore.getActive());
+  const [selectedService, setSelectedService] = useState<LocalService | null>(services[0] ?? null);
+
+  useEffect(() => {
+    const unsub = serviceStore.subscribe(() => {
+      const active = serviceStore.getActive();
+      setServices(active);
+      setSelectedService((curr) => {
+        if (!curr) return active[0] ?? null;
+        return active.find((s) => s.id === curr.id) ?? active[0] ?? null;
+      });
+    });
+    return unsub;
+  }, []);
+
+  const calcDefaultPayment = (
+    service: LocalService | null,
+    weightStr: string,
+    qtyStr: string
+  ): string => {
+    if (!service) return '0';
+    if (service.pricing_type === 'per_load' || service.pricing_type === 'fixed') {
+      return (service.unit_price_centavos / 100).toString();
+    }
+    if (service.pricing_type === 'per_kg') {
+      const kg = parseFloat(weightStr);
+      const effectiveKg = isNaN(kg) || kg <= 0 ? 5 : kg;
+      return Math.round(effectiveKg * (service.unit_price_centavos / 100)).toString();
+    }
+    if (service.pricing_type === 'per_piece') {
+      const q = parseInt(qtyStr, 10);
+      const effectiveQty = isNaN(q) || q <= 0 ? 1 : q;
+      return Math.round(effectiveQty * (service.unit_price_centavos / 100)).toString();
+    }
+    return (service.unit_price_centavos / 100).toString();
+  };
+
+  const [weightKg, setWeightKg] = useState('6.0');
+  const [quantity, setQuantity] = useState('1');
   const [additionalFee, setAdditionalFee] = useState('');
-  const [rushFee, setRushFee] = useState('');
+  const [rushFee, setRushFee] = useState('50');
   const [isRush, setIsRush] = useState(false);
-  const [amountPaid, setAmountPaid] = useState('');
+  const [amountPaid, setAmountPaid] = useState(() =>
+    calcDefaultPayment(services[0] ?? null, '6.0', '1')
+  );
   const [notes, setNotes] = useState('');
 
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const handleSelectService = (s: LocalService) => {
+    setSelectedService(s);
+    setAmountPaid(calcDefaultPayment(s, weightKg, quantity));
+  };
 
-  // Load services (active only)
-  useEffect(() => {
-    if (!shopId) return;
-    (async () => {
-      setLoadingServices(true);
-      try {
-        const rows = await listServices(shopId, false);
-        setServices(rows);
-      } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
-      } finally {
-        setLoadingServices(false);
-      }
-    })();
-  }, [shopId]);
+  const handleWeightChange = (val: string) => {
+    setWeightKg(val);
+    if (selectedService && selectedService.pricing_type === 'per_kg') {
+      setAmountPaid(calcDefaultPayment(selectedService, val, quantity));
+    }
+  };
 
-  // Search customers when query changes
-  useEffect(() => {
-    if (!shopId) return;
-    let cancelled = false;
-    (async () => {
-      setLoadingCustomers(true);
-      try {
-        const rows = await searchCustomers(customerQuery, shopId);
-        if (!cancelled) setCustomerResults(rows);
-      } catch {
-        if (!cancelled) setCustomerResults([]);
-      } finally {
-        if (!cancelled) setLoadingCustomers(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [customerQuery, shopId]);
+  const handleQuantityChange = (val: string) => {
+    setQuantity(val);
+    if (selectedService && selectedService.pricing_type === 'per_piece') {
+      setAmountPaid(calcDefaultPayment(selectedService, weightKg, val));
+    }
+  };
 
-  // Price calculations
+  const [saving] = useState(false);
+  const [error] = useState<string | null>(null);
+
   const parsedWeightGrams = useMemo(() => {
     const kg = parseFloat(weightKg);
     if (isNaN(kg) || kg <= 0) return null;
     return Math.round(kg * 1000);
   }, [weightKg]);
+
   const parsedQuantity = useMemo(() => {
     const q = parseInt(quantity, 10);
     if (isNaN(q) || q <= 0) return null;
     return q;
   }, [quantity]);
+
   const additionalCents = useMemo(() => {
     const v = parseFloat(additionalFee);
     return isNaN(v) || v < 0 ? 0 : Math.round(v * 100);
   }, [additionalFee]);
+
   const rushCents = useMemo(() => {
     const v = parseFloat(rushFee);
     const base = isNaN(v) || v < 0 ? 0 : Math.round(v * 100);
     return isRush ? base : 0;
   }, [rushFee, isRush]);
+
   const paidCents = useMemo(() => {
     const v = parseFloat(amountPaid);
     return isNaN(v) || v < 0 ? 0 : Math.round(v * 100);
@@ -122,6 +164,7 @@ export default function ReceiveScreen() {
       weightBlockGrams: weightBlockGrams,
     });
   }, [selectedService, parsedWeightGrams, parsedQuantity, weightBlockGrams]);
+
   const totalCents = useMemo(() => calcTotal(baseCents, additionalCents, rushCents), [baseCents, additionalCents, rushCents]);
   const balanceCents = useMemo(() => calcBalance(totalCents, paidCents), [totalCents, paidCents]);
   const paymentStatus = useMemo(() => derivePaymentStatus(totalCents, paidCents), [totalCents, paidCents]);
@@ -137,334 +180,340 @@ export default function ReceiveScreen() {
     return true;
   }, [selectedCustomer, selectedService, parsedWeightGrams, parsedQuantity, totalCents, paidCents]);
 
-  const handleCreate = async () => {
-    setError(null);
-    if (!shopId) {
-      setError('Shop not found. Please re-login.');
-      return;
-    }
+  const handleCreate = () => {
     if (!selectedCustomer || !selectedService) {
-      setError('Select customer and service.');
+      Alert.alert('Customer Required', 'Please select a customer and service.');
       return;
     }
-    // Show review alert first
-    const isLoad = selectedService.pricing_type === 'per_load';
-    const blockKg = (selectedService.weight_block_grams ?? 8000) / 1000;
-    const summary = `Customer: ${selectedCustomer.name}\nService: ${selectedService.name}\nRate: ${formatPHP(selectedService.unit_price_centavos)}${isLoad ? ` / ${blockKg}kg` : selectedService.pricing_type === 'per_kg' ? '/kg' : selectedService.pricing_type === 'per_piece' ? '/piece' : ''}\n${isLoad ? `Weight: ${(parsedWeightGrams ?? 0) / 1000}kg\nLoads: ${loads}\n` : ''}Base: ${formatPHP(baseCents)}\nAdditional: ${formatPHP(additionalCents)}\nRush: ${formatPHP(rushCents)}\nTOTAL: ${formatPHP(totalCents)}\nPaid: ${formatPHP(paidCents)}\nBALANCE: ${formatPHP(balanceCents)}`;
-    Alert.alert('Review Order', summary, [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Create Order',
-        onPress: async () => {
-          setSaving(true);
-          try {
-            const order = await createOrder({
-              shop_id: shopId,
-              customer_id: selectedCustomer.id,
-              customer_name_snapshot: selectedCustomer.name,
-              service_id: selectedService.id,
-              service_name: selectedService.name,
-              pricing_type: selectedService.pricing_type,
-              unit_price_centavos: selectedService.unit_price_centavos,
-              weight_block_grams: selectedService.pricing_type === 'per_load' ? (selectedService.weight_block_grams ?? 8000) : null,
-              weight_grams: parsedWeightGrams,
-              quantity: parsedQuantity,
-              additional_fee_centavos: additionalCents,
-              rush_fee_centavos: rushCents,
-              is_rush: isRush,
-              amount_paid_centavos: paidCents,
-              notes: notes.trim() || null,
-            });
-            Alert.alert('Order successfully received', `Order Number:\n${order.order_number}`, [
-              {
-                text: 'View Order',
-                onPress: () => router.replace({ pathname: '/order-detail' as any, params: { id: order.id } }),
-              },
-              { text: 'New Order', onPress: () => router.replace('/receive' as any) },
-            ]);
-            // Reset form for next order (if user stays)
-            setWeightKg('');
-            setQuantity('');
-            setAdditionalFee('');
-            setRushFee('');
-            setAmountPaid('');
-            setNotes('');
-            setIsRush(false);
-          } catch (e) {
-            setError(e instanceof Error ? e.message : String(e));
-          } finally {
-            setSaving(false);
-          }
-        },
-      },
+    const created = orderStore.createOrder({
+      customer_id: selectedCustomer.id,
+      customer_name: selectedCustomer.name,
+      customer_contact: selectedCustomer.contact_number || '',
+      service_id: selectedService.id,
+      service_name: selectedService.name,
+      pricing_type: selectedService.pricing_type,
+      quantity_or_weight: selectedService.pricing_type === 'per_piece' ? (parsedQuantity ?? 1) : ((parsedWeightGrams ?? 0) / 1000),
+      total_centavos: totalCents,
+      paid_centavos: paidCents,
+      notes: notes.trim() || undefined,
+    });
+
+    Alert.alert('Order Created', `Order ${created.order_number} for ${selectedCustomer.name} has been received.`, [
+      { text: 'View Order', onPress: () => router.replace({ pathname: '/order-detail' as any, params: { id: created.id } }) },
+      { text: 'Orders List', onPress: () => router.replace('/orders' as any) },
     ]);
   };
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
+      <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+        {/* Header */}
         <View style={styles.header}>
           <Pressable onPress={() => router.back()} style={styles.backButton}>
-            <Text style={styles.backText}>‹ Back</Text>
+            <Ionicons name="chevron-back" size={20} color="#1d4ed8" />
+            <Text style={styles.backText}>Back</Text>
           </Pressable>
-          <Text style={styles.title}>Receive Laundry</Text>
-          <View style={{ width: 60 }} />
+          <Text style={styles.title}>New Laundry Order</Text>
+          <View style={{ width: 50 }} />
         </View>
 
-        {/* Customer */}
+        {/* 1. Customer Selection */}
         <View style={styles.card}>
-          <Text style={styles.cardTitle}>1. Customer</Text>
+          <Text style={styles.cardTitle}>Customer</Text>
           {selectedCustomer ? (
             <View style={styles.selectedBox}>
-              <Text style={styles.selectedName}>{selectedCustomer.name}</Text>
-              <Text style={styles.selectedContact}>{selectedCustomer.contact_number}</Text>
-              <Pressable onPress={() => setSelectedCustomer(null)} style={styles.smallButton}>
-                <Text style={styles.smallButtonText}>Change</Text>
+              <View style={styles.selectedInfo}>
+                <Text style={styles.selectedName}>{selectedCustomer.name}</Text>
+                {selectedCustomer.contact_number ? (
+                  <Text style={styles.selectedContact}>{selectedCustomer.contact_number}</Text>
+                ) : null}
+                {selectedCustomer.address ? <Text style={styles.selectedAddress}>{selectedCustomer.address}</Text> : null}
+              </View>
+              <Pressable onPress={() => setSelectedCustomer(null)} style={styles.changeBtn}>
+                <Text style={styles.changeBtnText}>Change</Text>
               </Pressable>
             </View>
           ) : (
-            <>
+            <View>
               <TextInput
-                placeholder="Search name or contact"
+                placeholder="Search customer by name or contact"
+                placeholderTextColor="#94a3b8"
                 value={customerQuery}
                 onChangeText={setCustomerQuery}
                 style={styles.input}
                 autoCapitalize="none"
               />
-              {loadingCustomers ? (
-                <ActivityIndicator size="small" color="#3157d5" style={{ marginTop: 8 }} />
-              ) : (
-                <View style={{ marginTop: 8 }}>
-                  {customerResults.length === 0 ? (
-                    <Text style={styles.hint}>No customers found. Try search or add new.</Text>
-                  ) : (
-                    customerResults.slice(0, 5).map((c) => (
-                      <Pressable key={c.id} onPress={() => setSelectedCustomer(c)} style={styles.resultRow}>
-                        <Text style={styles.resultName}>{c.name}</Text>
-                        <Text style={styles.resultContact}>{c.contact_number}</Text>
-                      </Pressable>
-                    ))
-                  )}
-                  <Pressable onPress={() => router.push('/customer-add' as any)} style={styles.linkButton}>
-                    <Text style={styles.linkText}>＋ Add New Customer</Text>
-                  </Pressable>
-                </View>
-              )}
-            </>
-          )}
-        </View>
 
-        {/* Service */}
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>2. Service</Text>
-          {loadingServices ? (
-            <ActivityIndicator color="#3157d5" />
-          ) : services.length === 0 ? (
-            <Text style={styles.hint}>No active services. Create one in Services & Rates.</Text>
-          ) : (
-            <View style={styles.serviceGrid}>
-              {services.map((s) => (
-                <Pressable
-                  key={s.id}
-                  onPress={() => setSelectedService(s)}
-                  style={[styles.serviceChip, selectedService?.id === s.id && styles.serviceChipActive]}
-                >
-                  <Text style={[styles.serviceName, selectedService?.id === s.id && styles.serviceNameActive]}>{s.name}</Text>
-                  <Text style={[styles.servicePrice, selectedService?.id === s.id && styles.servicePriceActive]}>
-                    {s.pricing_type === 'per_load'
-                      ? `${formatPHP(s.unit_price_centavos)} / ${s.weight_block_grams ? s.weight_block_grams / 1000 : 8}kg`
-                      : `${formatPHP(s.unit_price_centavos)}${s.pricing_type === 'per_kg' ? '/kg' : s.pricing_type === 'per_piece' ? '/piece' : ''}`}
-                  </Text>
-                  <Text style={[styles.serviceType, selectedService?.id === s.id && styles.serviceTypeActive]}>
-                    {s.pricing_type === 'per_kg'
-                      ? 'Per kilogram'
-                      : s.pricing_type === 'per_piece'
-                        ? 'Per piece'
-                        : s.pricing_type === 'per_load'
-                          ? `Per load (${s.weight_block_grams ? s.weight_block_grams / 1000 : 8}kg)`
-                          : 'Fixed price'}
-                  </Text>
-                </Pressable>
-              ))}
+              <View style={styles.customerList}>
+                {customerResults.map((c) => (
+                  <Pressable
+                    key={c.id}
+                    onPress={() => setSelectedCustomer(c)}
+                    style={({ pressed }) => [styles.customerRow, pressed && styles.rowPressed]}
+                  >
+                    <View style={styles.customerRowLeft}>
+                      <View style={styles.customerAvatar}>
+                        <Ionicons name="person-outline" size={16} color="#1d4ed8" />
+                      </View>
+                      <View>
+                        <Text style={styles.customerName}>{c.name}</Text>
+                        {c.contact_number ? <Text style={styles.customerContact}>{c.contact_number}</Text> : null}
+                      </View>
+                    </View>
+                    <View style={styles.selectBadge}>
+                      <Text style={styles.selectBadgeText}>Select</Text>
+                    </View>
+                  </Pressable>
+                ))}
+              </View>
+
+              <Pressable onPress={() => router.push('/customer-add' as any)} style={styles.addNewCustBtn}>
+                <Ionicons name="add" size={16} color="#1d4ed8" />
+                <Text style={styles.addNewCustText}>Add New Customer</Text>
+              </Pressable>
             </View>
           )}
-          {selectedService ? (
-            <Text style={styles.selectedServiceHint}>
-              Selected: {selectedService.name} •{' '}
-              {selectedService.pricing_type === 'per_load'
-                ? `${formatPHP(selectedService.unit_price_centavos)} per ${selectedService.weight_block_grams ? selectedService.weight_block_grams / 1000 : 8}kg`
-                : formatPHP(selectedService.unit_price_centavos)}
-            </Text>
-          ) : null}
         </View>
 
-        {/* Weight / Quantity */}
-        {selectedService?.pricing_type === 'per_kg' && (
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>3. Weight</Text>
-            <Text style={styles.label}>Weight (kg) *</Text>
-            <TextInput placeholder="5.5" value={weightKg} onChangeText={setWeightKg} keyboardType="decimal-pad" style={styles.input} />
-            <Text style={styles.hint}>Stored as grams: {parsedWeightGrams ?? 0}g</Text>
-          </View>
-        )}
-        {selectedService?.pricing_type === 'per_load' && (
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>3. Weight (Package)</Text>
-            <Text style={styles.label}>Weight (kg) *</Text>
-            <TextInput placeholder="5.5" value={weightKg} onChangeText={setWeightKg} keyboardType="decimal-pad" style={styles.input} />
-            <Text style={styles.hint}>
-              Rate: {formatPHP(selectedService.unit_price_centavos)} per {(selectedService.weight_block_grams ?? 8000) / 1000}kg • Loads: {loads} • Laundry Charge: {formatPHP(baseCents)}
-            </Text>
-            <Text style={styles.hint}>Stored as grams: {parsedWeightGrams ?? 0}g • Block: {(weightBlockGrams ?? 8000) / 1000}kg</Text>
-          </View>
-        )}
-        {selectedService?.pricing_type === 'per_piece' && (
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>3. Quantity</Text>
-            <Text style={styles.label}>Quantity *</Text>
-            <TextInput placeholder="2" value={quantity} onChangeText={setQuantity} keyboardType="number-pad" style={styles.input} />
-          </View>
-        )}
-        {selectedService?.pricing_type === 'fixed' && (
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>3. Fixed Price</Text>
-            <Text style={styles.hint}>No weight/quantity needed. Base = {formatPHP(selectedService.unit_price_centavos)}</Text>
-          </View>
-        )}
-
-        {/* Fees */}
+        {/* 2. Service */}
         <View style={styles.card}>
-          <Text style={styles.cardTitle}>4. Additional Charges</Text>
-          <Text style={styles.label}>Additional Fee (₱)</Text>
-          <TextInput placeholder="0" value={additionalFee} onChangeText={setAdditionalFee} keyboardType="decimal-pad" style={styles.input} />
-          <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 12 }}>
-            <Pressable onPress={() => setIsRush(!isRush)} style={[styles.toggle, isRush ? styles.toggleActive : styles.toggleInactive]}>
-              <Text style={styles.toggleText}>{isRush ? 'Rush: ON' : 'Rush: OFF'}</Text>
-            </Pressable>
-            <TextInput
-              placeholder="0"
-              value={rushFee}
-              onChangeText={setRushFee}
-              keyboardType="decimal-pad"
-              style={[styles.input, { flex: 1, marginLeft: 10, marginTop: 0 }]}
-              editable={isRush}
-            />
+          <Text style={styles.cardTitle}>Service</Text>
+          <View style={styles.serviceGrid}>
+            {services.map((s) => {
+              const active = selectedService?.id === s.id;
+              return (
+                <Pressable
+                  key={s.id}
+                  onPress={() => handleSelectService(s)}
+                  style={[styles.serviceChip, active && styles.serviceChipActive]}
+                >
+                  <Text style={[styles.serviceName, active && styles.serviceNameActive]}>{s.name}</Text>
+                  <Text style={[styles.servicePrice, active && styles.servicePriceActive]}>
+                    {s.pricing_type === 'per_load'
+                      ? `${formatPHP(s.unit_price_centavos)} / load`
+                      : `${formatPHP(s.unit_price_centavos)}${s.pricing_type === 'per_kg' ? '/kg' : '/piece'}`}
+                  </Text>
+                </Pressable>
+              );
+            })}
           </View>
-          <Text style={styles.label}>Notes (optional)</Text>
-          <TextInput placeholder="Separate whites, no fabric conditioner..." value={notes} onChangeText={setNotes} style={[styles.input, { minHeight: 60, textAlignVertical: 'top' }]} multiline />
-
-          <Text style={styles.label}>Initial Payment (₱)</Text>
-          <TextInput placeholder="0" value={amountPaid} onChangeText={setAmountPaid} keyboardType="decimal-pad" style={styles.input} />
         </View>
 
-        {/* Price Review */}
+        {/* 3. Weight / Quantity */}
         <View style={styles.card}>
-          <Text style={styles.cardTitle}>5. Review</Text>
-          {selectedService ? (
-            <>
-              <Row
-                label="Rate"
-                value={
-                  selectedService.pricing_type === 'per_load'
-                    ? `${formatPHP(selectedService.unit_price_centavos)} per ${(selectedService.weight_block_grams ?? 8000) / 1000}kg`
-                    : selectedService.pricing_type === 'per_kg'
-                      ? `${formatPHP(selectedService.unit_price_centavos)}/kg`
-                      : selectedService.pricing_type === 'per_piece'
-                        ? `${formatPHP(selectedService.unit_price_centavos)}/piece`
-                        : formatPHP(selectedService.unit_price_centavos)
-                }
-              />
-              {selectedService.pricing_type === 'per_load' && parsedWeightGrams ? (
-                <>
-                  <Row label="Weight" value={`${(parsedWeightGrams / 1000).toFixed(2)} kg`} />
-                  <Row label="Loads" value={`${loads}`} />
-                </>
-              ) : null}
-              {selectedService.pricing_type === 'per_kg' && parsedWeightGrams ? <Row label="Weight" value={`${(parsedWeightGrams / 1000).toFixed(2)} kg`} /> : null}
-              {selectedService.pricing_type === 'per_piece' && parsedQuantity ? <Row label="Quantity" value={`${parsedQuantity}`} /> : null}
-            </>
-          ) : null}
-          <Row label="Base" value={formatPHP(baseCents)} />
-          <Row label="Additional" value={formatPHP(additionalCents)} />
-          <Row label="Rush" value={formatPHP(rushCents)} />
-          <View style={styles.divider} />
-          <Row label="TOTAL" value={formatPHP(totalCents)} bold />
-          <Row label="Paid" value={formatPHP(paidCents)} />
-          <Row label="BALANCE" value={formatPHP(balanceCents)} bold />
-          <Row label="Payment Status" value={paymentStatus} />
-          <Text style={styles.hint}>
-            Snapshot:{' '}
-            {selectedService
-              ? selectedService.pricing_type === 'per_load'
-                ? `${selectedService.name} ${formatPHP(selectedService.unit_price_centavos)} / ${selectedService.weight_block_grams ? selectedService.weight_block_grams / 1000 : 8}kg`
-                : `${selectedService.name} ${formatPHP(selectedService.unit_price_centavos)}/${selectedService.pricing_type}`
-              : '-'}
+          <Text style={styles.cardTitle}>
+            {selectedService?.pricing_type === 'per_piece' ? 'Quantity' : 'Weight (kg)'}
           </Text>
+          {selectedService?.pricing_type === 'per_piece' ? (
+            <TextInput
+              placeholder="1"
+              placeholderTextColor="#94a3b8"
+              value={quantity}
+              onChangeText={handleQuantityChange}
+              keyboardType="number-pad"
+              style={styles.input}
+            />
+          ) : (
+            <TextInput
+              placeholder="0.0"
+              placeholderTextColor="#94a3b8"
+              value={weightKg}
+              onChangeText={handleWeightChange}
+              keyboardType="decimal-pad"
+              style={styles.input}
+            />
+          )}
+        </View>
+
+        {/* 4. Options & Payment */}
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>Details & Payment</Text>
+          
+          <View style={styles.rushRow}>
+            <Text style={styles.label}>Rush Order</Text>
+            <Pressable
+              onPress={() => setIsRush(!isRush)}
+              style={[styles.rushPill, isRush && styles.rushPillActive]}
+            >
+              <Text style={[styles.rushText, isRush && styles.rushTextActive]}>
+                {isRush ? 'Yes (+₱50)' : 'No'}
+              </Text>
+            </Pressable>
+          </View>
+
+          <View style={styles.payHeaderRow}>
+            <Text style={styles.label}>Initial Payment (₱)</Text>
+            <View style={styles.quickPayRow}>
+              <Pressable
+                onPress={() => setAmountPaid((totalCents / 100).toFixed(0))}
+                style={styles.quickPayChip}
+              >
+                <Text style={styles.quickPayText}>Full (₱{(totalCents / 100).toFixed(0)})</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => setAmountPaid('0')}
+                style={styles.quickPayChip}
+              >
+                <Text style={styles.quickPayText}>₱0 (Unpaid)</Text>
+              </Pressable>
+            </View>
+          </View>
+          <TextInput
+            placeholder="0.00"
+            placeholderTextColor="#94a3b8"
+            value={amountPaid}
+            onChangeText={setAmountPaid}
+            keyboardType="decimal-pad"
+            style={styles.input}
+          />
+
+          <Text style={styles.label}>Special Notes</Text>
+          <TextInput
+            placeholder="Optional instructions..."
+            placeholderTextColor="#94a3b8"
+            value={notes}
+            onChangeText={setNotes}
+            style={[styles.input, { minHeight: 44 }]}
+          />
+        </View>
+
+        {/* 5. Summary */}
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>Summary</Text>
+          <View style={styles.summaryRow}>
+            <Text style={styles.summaryLabel}>Customer</Text>
+            <Text style={styles.summaryValue}>{selectedCustomer ? selectedCustomer.name : 'None selected'}</Text>
+          </View>
+          <View style={styles.summaryRow}>
+            <Text style={styles.summaryLabel}>Total Amount</Text>
+            <Text style={styles.summaryTotal}>{formatPHP(totalCents)}</Text>
+          </View>
+          <View style={styles.summaryRow}>
+            <Text style={styles.summaryLabel}>Paid</Text>
+            <Text style={styles.summaryValue}>{formatPHP(paidCents)}</Text>
+          </View>
+          <View style={styles.divider} />
+          <View style={styles.summaryRow}>
+            <Text style={styles.summaryLabelBold}>Balance</Text>
+            <Text style={styles.summaryBalance}>{formatPHP(balanceCents)}</Text>
+          </View>
         </View>
 
         {error ? <Text style={styles.error}>{error}</Text> : null}
 
-        <Pressable onPress={handleCreate} disabled={!canCreate || saving} style={[styles.createButton, (!canCreate || saving) && styles.buttonDisabled]}>
-          {saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.createText}>Create Order</Text>}
+        <Pressable
+          onPress={handleCreate}
+          disabled={!canCreate || saving}
+          style={[styles.createButton, (!canCreate || saving) && styles.buttonDisabled]}
+        >
+          <Text style={styles.createText}>Confirm & Create Order</Text>
         </Pressable>
-        <Text style={styles.offlineHint}>Saved locally (PENDING). Works offline.</Text>
       </ScrollView>
     </SafeAreaView>
   );
 }
 
-function Row({ label, value, bold }: { label: string; value: string; bold?: boolean }) {
-  return (
-    <View style={styles.row}>
-      <Text style={[styles.rowLabel, bold && { fontWeight: '800' }]}>{label}</Text>
-      <Text style={[styles.rowValue, bold && { fontWeight: '800', color: '#172554' }]}>{value}</Text>
-    </View>
-  );
-}
-
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: '#f4f6fb' },
-  container: { padding: 16, paddingBottom: 40 },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 },
-  backButton: { padding: 6 },
-  backText: { color: '#3157d5', fontSize: 14, fontWeight: '600' },
-  title: { color: '#172554', fontSize: 18, fontWeight: '800' },
-  card: { backgroundColor: '#fff', borderRadius: 16, padding: 16, marginTop: 12, elevation: 1, shadowColor: '#0f172a', shadowOpacity: 0.06, shadowRadius: 10 },
-  cardTitle: { color: '#1e293b', fontSize: 14, fontWeight: '700', marginBottom: 8 },
-  label: { color: '#334155', fontSize: 12, fontWeight: '600', marginTop: 10, marginBottom: 6 },
-  input: { borderWidth: 1, borderColor: '#e2e8f0', borderRadius: 10, paddingHorizontal: 14, paddingVertical: 10, fontSize: 14, backgroundColor: '#f8fafc', color: '#0f172a' },
-  hint: { color: '#64748b', fontSize: 11, marginTop: 6, fontStyle: 'italic' },
-  selectedBox: { backgroundColor: '#f1f5f9', borderRadius: 10, padding: 12 },
-  selectedName: { color: '#0f172a', fontWeight: '700' },
-  selectedContact: { color: '#3157d5', fontSize: 12, marginTop: 2 },
-  smallButton: { marginTop: 8, alignSelf: 'flex-start', backgroundColor: '#e2e8f0', borderRadius: 6, paddingHorizontal: 10, paddingVertical: 6 },
-  smallButtonText: { color: '#1e293b', fontSize: 12, fontWeight: '600' },
-  resultRow: { paddingVertical: 10, borderTopWidth: 1, borderTopColor: '#f1f5f9' },
-  resultName: { color: '#0f172a', fontWeight: '600' },
-  resultContact: { color: '#64748b', fontSize: 12 },
-  linkButton: { marginTop: 8, alignSelf: 'flex-start' },
-  linkText: { color: '#3157d5', fontWeight: '700', fontSize: 13 },
+  safeArea: { flex: 1, backgroundColor: '#f8fafc' },
+  container: { padding: 18, paddingBottom: 40 },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 },
+  backButton: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  backText: { color: '#1d4ed8', fontSize: 14, fontWeight: '600' },
+  title: { color: '#0f172a', fontSize: 17, fontWeight: '700' },
+  card: { backgroundColor: '#ffffff', borderRadius: 12, padding: 16, marginBottom: 12, borderWidth: 1, borderColor: '#e2e8f0' },
+  cardTitle: { color: '#0f172a', fontSize: 13, fontWeight: '600', marginBottom: 10 },
+  label: { color: '#64748b', fontSize: 12, fontWeight: '500', marginBottom: 6, marginTop: 8 },
+  input: { borderWidth: 1, borderColor: '#e2e8f0', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, fontSize: 14, backgroundColor: '#f8fafc', color: '#0f172a' },
+  selectedBox: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#eff6ff', borderRadius: 8, padding: 12, borderWidth: 1, borderColor: '#dbeafe' },
+  selectedInfo: { flex: 1 },
+  selectedName: { color: '#0f172a', fontWeight: '700', fontSize: 14 },
+  selectedContact: { color: '#1d4ed8', fontSize: 12, marginTop: 2 },
+  selectedAddress: { color: '#64748b', fontSize: 11, marginTop: 2 },
+  changeBtn: { backgroundColor: '#ffffff', borderRadius: 6, paddingHorizontal: 10, paddingVertical: 5, borderWidth: 1, borderColor: '#bfdbfe' },
+  changeBtnText: { color: '#1d4ed8', fontSize: 12, fontWeight: '600' },
+  customerList: { marginTop: 10 },
+  customerRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f1f5f9',
+  },
+  rowPressed: { backgroundColor: '#f1f5f9' },
+  customerRowLeft: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  customerAvatar: {
+    width: 32,
+    height: 32,
+    borderRadius: 6,
+    backgroundColor: '#eff6ff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  customerName: { color: '#0f172a', fontWeight: '600', fontSize: 13 },
+  customerContact: { color: '#64748b', fontSize: 11, marginTop: 1 },
+  selectBadge: {
+    backgroundColor: '#eff6ff',
+    borderRadius: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+  },
+  selectBadgeText: { color: '#1d4ed8', fontSize: 11, fontWeight: '600' },
+  addNewCustBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 10,
+    marginTop: 8,
+    borderRadius: 8,
+    backgroundColor: '#f8fafc',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  addNewCustText: { color: '#1d4ed8', fontSize: 13, fontWeight: '600' },
   serviceGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  serviceChip: { borderWidth: 1, borderColor: '#e2e8f0', borderRadius: 12, padding: 10, backgroundColor: '#fff', minWidth: '48%' },
-  serviceChipActive: { backgroundColor: '#172554', borderColor: '#172554' },
-  serviceName: { color: '#0f172a', fontWeight: '700', fontSize: 13 },
-  serviceNameActive: { color: '#fff' },
-  servicePrice: { color: '#3157d5', fontWeight: '700', fontSize: 12, marginTop: 2 },
-  servicePriceActive: { color: '#a5b4fc' },
-  serviceType: { color: '#64748b', fontSize: 10, marginTop: 2 },
-  serviceTypeActive: { color: '#cbd5e1' },
-  selectedServiceHint: { color: '#64748b', fontSize: 11, marginTop: 8, fontStyle: 'italic' },
-  toggle: { borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8 },
-  toggleActive: { backgroundColor: '#dcfce7' },
-  toggleInactive: { backgroundColor: '#fee2e2' },
-  toggleText: { fontWeight: '700', fontSize: 12, color: '#1e293b' },
-  row: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 6 },
-  rowLabel: { color: '#64748b', fontSize: 13 },
-  rowValue: { color: '#0f172a', fontSize: 13, fontWeight: '600' },
-  divider: { height: 1, backgroundColor: '#e2e8f0', marginVertical: 8 },
-  error: { color: '#b91c1c', fontSize: 13, marginTop: 12, textAlign: 'center' },
-  createButton: { backgroundColor: '#3157d5', borderRadius: 12, padding: 14, alignItems: 'center', marginTop: 16 },
+  serviceChip: { borderWidth: 1, borderColor: '#e2e8f0', borderRadius: 8, padding: 12, backgroundColor: '#ffffff', width: '48%' },
+  serviceChipActive: { backgroundColor: '#1d4ed8', borderColor: '#1d4ed8' },
+  serviceName: { color: '#0f172a', fontWeight: '600', fontSize: 13 },
+  serviceNameActive: { color: '#ffffff' },
+  servicePrice: { color: '#1d4ed8', fontWeight: '700', fontSize: 12, marginTop: 2 },
+  servicePriceActive: { color: '#bfdbfe' },
+  rushRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 4 },
+  rushPill: { backgroundColor: '#f1f5f9', borderRadius: 6, paddingHorizontal: 12, paddingVertical: 6, borderWidth: 1, borderColor: '#e2e8f0' },
+  rushPillActive: { backgroundColor: '#eff6ff', borderColor: '#93c5fd' },
+  rushText: { color: '#64748b', fontSize: 12, fontWeight: '600' },
+  rushTextActive: { color: '#1d4ed8' },
+  payHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 10,
+    marginBottom: 4,
+  },
+  quickPayRow: { flexDirection: 'row', gap: 6 },
+  quickPayChip: {
+    backgroundColor: '#eff6ff',
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+  },
+  quickPayText: { color: '#1d4ed8', fontSize: 11, fontWeight: '600' },
+  summaryRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4 },
+  summaryLabel: { color: '#64748b', fontSize: 13 },
+  summaryLabelBold: { color: '#0f172a', fontSize: 14, fontWeight: '700' },
+  summaryValue: { color: '#0f172a', fontSize: 13, fontWeight: '600' },
+  summaryTotal: { color: '#0f172a', fontSize: 14, fontWeight: '700' },
+  summaryBalance: { color: '#1d4ed8', fontSize: 16, fontWeight: '700' },
+  divider: { height: 1, backgroundColor: '#f1f5f9', marginVertical: 8 },
+  error: { color: '#b91c1c', fontSize: 12, marginTop: 8, textAlign: 'center' },
+  createButton: { backgroundColor: '#1d4ed8', borderRadius: 10, paddingVertical: 14, alignItems: 'center', marginTop: 12 },
   buttonDisabled: { opacity: 0.5 },
-  createText: { color: '#fff', fontSize: 16, fontWeight: '800' },
-  offlineHint: { color: '#64748b', fontSize: 11, textAlign: 'center', marginTop: 8, fontStyle: 'italic' },
+  createText: { color: '#ffffff', fontSize: 15, fontWeight: '700' },
 });

@@ -34,7 +34,7 @@ export function ErrorState({ message, onRetry }: { message: string; onRetry?: ()
           <Text style={styles.secondaryText}>Try Again</Text>
         </Pressable>
       ) : null}
-      <Text style={styles.note}>Your local data is safe. Working offline is supported.</Text>
+      <Text style={styles.note}>Your local data is safe.</Text>
     </View>
   );
 }

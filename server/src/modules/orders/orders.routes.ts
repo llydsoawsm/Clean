@@ -349,6 +349,8 @@ ordersRouter.patch('/:id/status', async (req: AuthenticatedRequest, res, next) =
   }
 });
 
+// --- Milestone 60%: Commented out order payments sub-route ---
+/*
 // POST /api/v1/orders/:id/payments — add payment, recalc (Phase 7: method/reference/notes)
 ordersRouter.post('/:id/payments', async (req: AuthenticatedRequest, res, next) => {
   try {
@@ -439,6 +441,7 @@ ordersRouter.post('/:id/payments', async (req: AuthenticatedRequest, res, next) 
     next(e);
   }
 });
+*/
 
 ordersRouter.delete('/:id', async (req: AuthenticatedRequest, res, next) => {
   try {

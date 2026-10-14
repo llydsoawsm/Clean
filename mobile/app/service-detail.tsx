@@ -1,184 +1,131 @@
-import { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useState, useEffect } from 'react';
+import { Alert, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
-import { getServiceById, updateService, softDeleteService } from '@/db/repositories/services';
+import { Ionicons } from '@expo/vector-icons';
 import type { PricingType } from '@/db/types';
+import { serviceStore } from '@/store/serviceStore';
 
 const pricingOptions: { value: PricingType; label: string }[] = [
-  { value: 'per_load', label: 'Per load (package)' },
-  { value: 'per_kg', label: 'Per kilogram' },
-  { value: 'per_piece', label: 'Per piece' },
-  { value: 'fixed', label: 'Fixed price' },
+  { value: 'per_load', label: 'Per Load' },
+  { value: 'per_kg', label: 'Per Kg' },
+  { value: 'per_piece', label: 'Per Piece' },
+  { value: 'fixed', label: 'Fixed Price' },
 ];
 
 export default function ServiceDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [name, setName] = useState('');
-  const [pricingType, setPricingType] = useState<PricingType>('per_kg');
-  const [price, setPrice] = useState('');
-  const [weightBlockKg, setWeightBlockKg] = useState('8');
-  const [description, setDescription] = useState('');
-  const [isActive, setIsActive] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [info, setInfo] = useState<string | null>(null);
+  const initial = id ? serviceStore.getById(id) : undefined;
+
+  const [name, setName] = useState(initial?.name || 'Wash & Fold');
+  const [pricingType, setPricingType] = useState<PricingType>(initial?.pricing_type || 'per_kg');
+  const [price, setPrice] = useState(initial ? (initial.unit_price_centavos / 100).toFixed(2) : '35.00');
+  const [isActive, setIsActive] = useState(initial ? initial.is_active === 1 : true);
+  const [description, setDescription] = useState(initial?.description || '');
 
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        if (!id) return;
-        const row = await getServiceById(id as string);
-        if (!row) {
-          if (!cancelled) setError('Service not found');
-          return;
-        }
-        if (!cancelled) {
-          setName(row.name);
-          setPricingType(row.pricing_type);
-          setPrice((row.unit_price_centavos / 100).toString());
-          setDescription(row.description ?? '');
-          setIsActive(!!row.is_active);
-          if (row.weight_block_grams) setWeightBlockKg((row.weight_block_grams / 1000).toString());
-          setInfo(`${row.is_active ? 'Active' : 'Inactive'} • ${row.sync_status} • ${new Date(row.updated_at).toLocaleString()}`);
-        }
-      } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
-      } finally {
-        if (!cancelled) setLoading(false);
+    if (id) {
+      const s = serviceStore.getById(id);
+      if (s) {
+        setName(s.name);
+        setPricingType(s.pricing_type);
+        setPrice((s.unit_price_centavos / 100).toFixed(2));
+        setIsActive(s.is_active === 1);
+        setDescription(s.description || '');
       }
-    })();
-    return () => {
-      cancelled = true;
-    };
+    }
   }, [id]);
 
-  const handleSave = async () => {
-    setError(null);
-    const n = name.trim();
-    if (!n) {
-      setError('Service name is required.');
+  const handleSave = () => {
+    if (!name.trim()) {
+      Alert.alert('Required', 'Please enter a service name.');
       return;
     }
-    const p = parseFloat(price);
-    if (isNaN(p) || p < 0) {
-      setError('Price must be ≥ 0');
+    const val = parseFloat(price);
+    if (isNaN(val) || val <= 0) {
+      Alert.alert('Invalid Price', 'Please enter a valid rate.');
       return;
     }
-    let blockGrams: number | null = null;
-    if (pricingType === 'per_load') {
-      const b = parseFloat(weightBlockKg);
-      if (isNaN(b) || b < 1 || b > 50) {
-        setError('Weight per load must be 1-50 kg');
-        return;
-      }
-      blockGrams = Math.round(b * 1000);
-    }
-    setSaving(true);
-    try {
-      await updateService(id as string, {
-        name: n,
+    if (id) {
+      serviceStore.update(id, {
+        name: name.trim(),
         pricing_type: pricingType,
-        unit_price_centavos: Math.round(p * 100),
-        description: description.trim() || null,
-        weight_block_grams: blockGrams,
+        unit_price_centavos: Math.round(val * 100),
         is_active: isActive ? 1 : 0,
+        description: description.trim() || undefined,
       });
-      router.back();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setSaving(false);
     }
+    router.back();
   };
 
-  const handleDelete = async () => {
-    Alert.alert('Delete Service', 'Delete this service? It will no longer be selectable for new orders. Historical orders remain (snapshots preserved). Works offline and will sync.', [
+  const handleDelete = () => {
+    Alert.alert('Delete Service', 'Are you sure you want to delete this service?', [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Delete',
         style: 'destructive',
-        onPress: async () => {
-          setSaving(true);
-          try {
-            await softDeleteService(id as string);
-            router.back();
-          } catch (e) {
-            setError(e instanceof Error ? e.message : String(e));
-          } finally {
-            setSaving(false);
-          }
+        onPress: () => {
+          if (id) serviceStore.delete(id);
+          router.back();
         },
       },
     ]);
   };
 
-  if (loading) {
-    return (
-      <SafeAreaView style={styles.safeArea}>
-        <View style={styles.center}>
-          <ActivityIndicator color="#3157d5" />
-          <Text style={styles.hint}>Loading...</Text>
-        </View>
-      </SafeAreaView>
-    );
-  }
-
   return (
     <SafeAreaView style={styles.safeArea}>
-      <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
+      <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
         <View style={styles.header}>
           <Pressable onPress={() => router.back()} style={styles.backButton}>
-            <Text style={styles.backText}>‹ Back</Text>
+            <Ionicons name="chevron-back" size={20} color="#1d4ed8" />
+            <Text style={styles.backText}>Back</Text>
           </Pressable>
-          <Text style={styles.title}>Edit Service</Text>
-          <View style={{ width: 60 }} />
+          <Text style={styles.title}>Service Details</Text>
+          <View style={{ width: 50 }} />
         </View>
 
         <View style={styles.card}>
-          {info ? <Text style={styles.info}>{info}</Text> : null}
+          <Text style={styles.label}>Service Name</Text>
+          <TextInput style={styles.input} value={name} onChangeText={setName} />
 
-          <Text style={styles.label}>Service Name *</Text>
-          <TextInput style={styles.input} value={name} onChangeText={setName} editable={!saving} />
-
-          <Text style={styles.label}>Pricing Type *</Text>
-          <View style={styles.chipRow}>
-            {pricingOptions.map((opt) => (
-              <Pressable key={opt.value} onPress={() => setPricingType(opt.value)} style={[styles.chip, pricingType === opt.value && styles.chipActive]}>
-                <Text style={[styles.chipText, pricingType === opt.value && styles.chipTextActive]}>{opt.label}</Text>
-              </Pressable>
-            ))}
+          <Text style={styles.label}>Pricing Model</Text>
+          <View style={styles.optionRow}>
+            {pricingOptions.map((opt) => {
+              const active = pricingType === opt.value;
+              return (
+                <Pressable
+                  key={opt.value}
+                  onPress={() => setPricingType(opt.value)}
+                  style={[styles.optionChip, active && styles.optionChipActive]}
+                >
+                  <Text style={[styles.optionText, active && styles.optionTextActive]}>{opt.label}</Text>
+                </Pressable>
+              );
+            })}
           </View>
 
-          <Text style={styles.label}>Price (₱) *</Text>
-          <TextInput style={styles.input} value={price} onChangeText={setPrice} keyboardType="decimal-pad" editable={!saving} />
-          {pricingType === 'per_load' && (
-            <>
-              <Text style={styles.label}>Weight per load (kg) *</Text>
-              <TextInput style={styles.input} value={weightBlockKg} onChangeText={setWeightBlockKg} keyboardType="decimal-pad" editable={!saving} />
-              <Text style={styles.hint}>e.g., 8 for ₱160/8kg, 10 for ₱200/10kg</Text>
-            </>
-          )}
+          <Text style={styles.label}>Rate (₱)</Text>
+          <TextInput style={styles.input} value={price} onChangeText={setPrice} keyboardType="decimal-pad" />
 
           <Text style={styles.label}>Description</Text>
-          <TextInput style={[styles.input, styles.multiline]} value={description} onChangeText={setDescription} multiline editable={!saving} />
+          <TextInput style={[styles.input, styles.multiline]} value={description} onChangeText={setDescription} multiline />
 
           <View style={styles.toggleRow}>
             <Text style={styles.label}>Status</Text>
-            <Pressable onPress={() => setIsActive(!isActive)} style={[styles.toggle, isActive ? styles.toggleActive : styles.toggleInactive]}>
-              <Text style={styles.toggleText}>{isActive ? 'Active' : 'Inactive'}</Text>
+            <Pressable
+              onPress={() => setIsActive(!isActive)}
+              style={[styles.statusToggle, isActive ? styles.statusActive : styles.statusInactive]}
+            >
+              <Text style={[styles.statusText, isActive ? styles.statusTextActive : styles.statusTextInactive]}>
+                {isActive ? 'Active' : 'Archived'}
+              </Text>
             </Pressable>
           </View>
-          <Text style={styles.hint}>Inactive services stay stored but hidden from future order screens.</Text>
 
-          {error ? <Text style={styles.error}>{error}</Text> : null}
-
-          <Pressable onPress={handleSave} disabled={saving} style={[styles.button, saving && styles.buttonDisabled]}>
-            {saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.buttonText}>Save Changes</Text>}
+          <Pressable onPress={handleSave} style={styles.button}>
+            <Text style={styles.buttonText}>Save Changes</Text>
           </Pressable>
 
-          <Pressable onPress={handleDelete} disabled={saving} style={[styles.deleteButton, saving && styles.buttonDisabled]}>
+          <Pressable onPress={handleDelete} style={styles.deleteButton}>
             <Text style={styles.deleteText}>Delete Service</Text>
           </Pressable>
         </View>
@@ -188,33 +135,52 @@ export default function ServiceDetailScreen() {
 }
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: '#f4f6fb' },
-  center: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 },
-  hint: { color: '#64748b', fontSize: 12, marginTop: 8 },
-  container: { padding: 16, paddingBottom: 40 },
+  safeArea: { flex: 1, backgroundColor: '#f8fafc' },
+  container: { padding: 18, paddingBottom: 40 },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 },
-  backButton: { padding: 6 },
-  backText: { color: '#3157d5', fontSize: 14, fontWeight: '600' },
-  title: { color: '#172554', fontSize: 18, fontWeight: '800' },
-  card: { backgroundColor: '#fff', borderRadius: 16, padding: 16, elevation: 1, shadowColor: '#0f172a', shadowOpacity: 0.06, shadowRadius: 10 },
-  info: { color: '#64748b', fontSize: 11, marginBottom: 8, fontStyle: 'italic' },
-  label: { color: '#334155', fontSize: 13, fontWeight: '600', marginTop: 12, marginBottom: 6 },
-  input: { borderWidth: 1, borderColor: '#e2e8f0', borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12, fontSize: 14, backgroundColor: '#f8fafc', color: '#0f172a' },
+  backButton: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  backText: { color: '#1d4ed8', fontSize: 14, fontWeight: '600' },
+  title: { color: '#0f172a', fontSize: 17, fontWeight: '700' },
+  card: { backgroundColor: '#ffffff', borderRadius: 12, padding: 16, borderWidth: 1, borderColor: '#e2e8f0' },
+  label: { color: '#64748b', fontSize: 12, fontWeight: '500', marginBottom: 6, marginTop: 12 },
+  input: {
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
+    backgroundColor: '#f8fafc',
+    color: '#0f172a',
+  },
+  optionRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 2 },
+  optionChip: {
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    backgroundColor: '#ffffff',
+  },
+  optionChipActive: { backgroundColor: '#1d4ed8', borderColor: '#1d4ed8' },
+  optionText: { color: '#64748b', fontSize: 12, fontWeight: '500' },
+  optionTextActive: { color: '#ffffff', fontWeight: '600' },
   multiline: { minHeight: 60, textAlignVertical: 'top' },
-  chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  chip: { borderWidth: 1, borderColor: '#e2e8f0', borderRadius: 20, paddingHorizontal: 14, paddingVertical: 8, backgroundColor: '#fff' },
-  chipActive: { backgroundColor: '#172554', borderColor: '#172554' },
-  chipText: { color: '#475569', fontSize: 12, fontWeight: '600' },
-  chipTextActive: { color: '#fff' },
   toggleRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 12 },
-  toggle: { borderRadius: 8, paddingHorizontal: 16, paddingVertical: 8 },
-  toggleActive: { backgroundColor: '#dcfce7' },
-  toggleInactive: { backgroundColor: '#fee2e2' },
-  toggleText: { fontWeight: '700', color: '#1e293b' },
-  error: { color: '#b91c1c', fontSize: 13, marginTop: 12 },
-  button: { backgroundColor: '#3157d5', borderRadius: 10, marginTop: 16, padding: 14, alignItems: 'center' },
-  buttonDisabled: { opacity: 0.6 },
-  buttonText: { color: '#fff', fontSize: 15, fontWeight: '700' },
-  deleteButton: { backgroundColor: '#fee2e2', borderWidth: 1, borderColor: '#fecaca', borderRadius: 10, marginTop: 12, padding: 14, alignItems: 'center' },
-  deleteText: { color: '#b91c1c', fontSize: 14, fontWeight: '700' },
+  statusToggle: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 6 },
+  statusActive: { backgroundColor: '#eff6ff', borderWidth: 1, borderColor: '#bfdbfe' },
+  statusInactive: { backgroundColor: '#f1f5f9', borderWidth: 1, borderColor: '#e2e8f0' },
+  statusText: { fontSize: 12, fontWeight: '600' },
+  statusTextActive: { color: '#1d4ed8' },
+  statusTextInactive: { color: '#64748b' },
+  button: {
+    backgroundColor: '#1d4ed8',
+    borderRadius: 10,
+    paddingVertical: 13,
+    alignItems: 'center',
+    marginTop: 22,
+  },
+  buttonText: { color: '#ffffff', fontSize: 15, fontWeight: '600' },
+  deleteButton: { marginTop: 12, paddingVertical: 10, alignItems: 'center' },
+  deleteText: { color: '#64748b', fontSize: 13, fontWeight: '500' },
 });

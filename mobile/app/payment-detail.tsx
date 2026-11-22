@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { formatPHP } from '@/utils/money';
@@ -15,12 +16,12 @@ export default function PaymentDetailScreen() {
   });
 
   useEffect(() => {
-    const list = orderStore.getAllPayments();
-    if (id) {
-      setPayment(list.find((p) => p.id === id));
-    } else {
-      setPayment(list[0]);
-    }
+    const refresh = () => {
+      const list = orderStore.getAllPayments();
+      setPayment(id ? list.find((p) => p.id === id) : list[0]);
+    };
+    refresh();
+    return orderStore.subscribe(refresh);
   }, [id]);
 
   if (!payment) {

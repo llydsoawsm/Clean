@@ -36,6 +36,12 @@ let payments: LocalPayment[] = [];
 
 const listeners = new Set<() => void>();
 
+let idCounter = 0;
+function nextId(prefix: string): string {
+  idCounter += 1;
+  return `${prefix}-${Date.now()}-${idCounter}`;
+}
+
 function notify() {
   listeners.forEach((l) => l());
 }
@@ -101,14 +107,19 @@ export const orderStore = {
   }): LocalOrder {
     const d = new Date();
     const ymd = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
-    const seq = String(orders.length + 1).padStart(4, '0');
-    const orderNumber = `CLN-${ymd}-${seq}`;
+    const prefix = `CLN-${ymd}-`;
+    let seqNum = orders.filter((o) => o.order_number.startsWith(prefix)).length + 1;
+    let orderNumber = prefix + String(seqNum).padStart(4, '0');
+    while (orders.some((o) => o.order_number === orderNumber)) {
+      seqNum += 1;
+      orderNumber = prefix + String(seqNum).padStart(4, '0');
+    }
 
     const balance = Math.max(0, input.total_centavos - input.paid_centavos);
     const paymentStatus = balance === 0 ? 'PAID' : input.paid_centavos > 0 ? 'PARTIAL' : 'UNPAID';
 
     const newOrder: LocalOrder = {
-      id: `ord-${Date.now()}`,
+      id: nextId('ord'),
       order_number: orderNumber,
       customer_id: input.customer_id,
       customer_name: input.customer_name,
@@ -130,7 +141,7 @@ export const orderStore = {
 
     if (input.paid_centavos > 0) {
       const newPay: LocalPayment = {
-        id: `pay-${Date.now()}`,
+        id: nextId('pay'),
         order_id: newOrder.id,
         order_number: newOrder.order_number,
         customer_name: newOrder.customer_name,
@@ -161,9 +172,20 @@ export const orderStore = {
     return { success: true };
   },
 
-  addPayment(orderId: string, amountCentavos: number, method: 'CASH' | 'GCASH' | 'OTHER' = 'CASH', reference?: string): void {
+  addPayment(
+    orderId: string,
+    amountCentavos: number,
+    method: 'CASH' | 'GCASH' | 'OTHER' = 'CASH',
+    reference?: string
+  ): { success: boolean; error?: string } {
     const ord = orders.find((o) => o.id === orderId);
-    if (!ord) return;
+    if (!ord) return { success: false, error: 'Order not found' };
+    if (!Number.isFinite(amountCentavos) || amountCentavos <= 0) {
+      return { success: false, error: 'Payment amount must be greater than zero.' };
+    }
+    if (amountCentavos > ord.balance_centavos) {
+      return { success: false, error: 'Payment exceeds the remaining balance.' };
+    }
 
     const newPaid = ord.paid_centavos + amountCentavos;
     const newBal = Math.max(0, ord.total_centavos - newPaid);
@@ -172,7 +194,7 @@ export const orderStore = {
     orders = orders.map((o) => (o.id === orderId ? { ...o, paid_centavos: newPaid, balance_centavos: newBal, payment_status: newStatus } : o));
 
     const newPay: LocalPayment = {
-      id: `pay-${Date.now()}`,
+      id: nextId('pay'),
       order_id: ord.id,
       order_number: ord.order_number,
       customer_name: ord.customer_name,
@@ -183,6 +205,7 @@ export const orderStore = {
     };
     payments = [newPay, ...payments];
     notify();
+    return { success: true };
   },
 
   truncateOrders(): void {

@@ -51,8 +51,22 @@ paymentsRouter.get('/', async (req: AuthenticatedRequest, res, next) => {
     // Date filters
     let fromDate: string | null = null;
     let toDate: string | null = null;
-    if (from) fromDate = new Date(from).toISOString();
-    if (to) toDate = new Date(to).toISOString();
+    if (from) {
+      const parsed = new Date(from);
+      if (Number.isNaN(parsed.getTime())) {
+        res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Invalid "from" date' } });
+        return;
+      }
+      fromDate = parsed.toISOString();
+    }
+    if (to) {
+      const parsed = new Date(to);
+      if (Number.isNaN(parsed.getTime())) {
+        res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Invalid "to" date' } });
+        return;
+      }
+      toDate = parsed.toISOString();
+    }
     // dateFilter helpers
     if (dateFilter === 'today') {
       fromDate = startOfDay(new Date()).toISOString();

@@ -1,8 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  ActivityIndicator,
   Pressable,
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
@@ -10,10 +8,9 @@ import {
   View,
   Alert,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { useAuth } from '@/context/AuthContext';
-import type { CustomerRow, ServiceRow } from '@/db/types';
 import { calcBaseCost, calcBalance, calcLoads, calcTotal, derivePaymentStatus, formatPHP } from '@/utils/money';
 import { customerStore, CustomerItem } from '@/store/customerStore';
 import { orderStore } from '@/store/orderStore';

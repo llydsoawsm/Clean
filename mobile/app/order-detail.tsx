@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Pressable, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, View, Alert } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, TextInput, View, Alert } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { formatPHP } from '@/utils/money';
@@ -64,7 +65,11 @@ export default function OrderDetailScreen() {
     if (!val || val <= 0 || !order) return;
     const cents = Math.round(val * 100);
 
-    orderStore.addPayment(order.id, cents, 'CASH');
+    const result = orderStore.addPayment(order.id, cents, 'CASH');
+    if (!result.success) {
+      Alert.alert('Cannot Record Payment', result.error ?? 'Payment could not be recorded.');
+      return;
+    }
     setPaymentAmount('');
     Alert.alert('Payment Recorded', `Successfully received ${formatPHP(cents)} for ${order.order_number}`);
   };

@@ -14,7 +14,9 @@
       "resizeMode": "contain",
       "backgroundColor": "#f8fafc"
     },
-    "assetBundlePatterns": ["**/*"],
+    "assetBundlePatterns": [
+      "**/*"
+    ],
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.clean.laundry",
@@ -48,7 +50,8 @@
       "expo-sqlite",
       "expo-asset",
       "expo-secure-store",
-      "expo-font"
+      "expo-font",
+      "expo-status-bar"
     ],
     "experiments": {
       "typedRoutes": true

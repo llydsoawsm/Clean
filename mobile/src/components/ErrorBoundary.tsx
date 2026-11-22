@@ -1,5 +1,7 @@
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { theme } from '@/theme';
 
 type Props = { children: React.ReactNode };
 type State = { hasError: boolean };
@@ -22,11 +24,16 @@ export class ErrorBoundary extends React.Component<Props, State> {
     if (this.state.hasError) {
       return (
         <View style={styles.container}>
+          <View style={styles.iconCircle}>
+            <MaterialCommunityIcons name="alert-circle-outline" size={28} color={theme.colors.danger} />
+          </View>
           <Text style={styles.title}>Something went wrong</Text>
-          <Text style={styles.message}>An unexpected error occurred while displaying this screen.</Text>
-          <Text style={styles.note}>Your local data is safe. Working offline is supported.</Text>
-          <Pressable onPress={() => this.setState({ hasError: false })} style={styles.button}>
-            <Text style={styles.buttonText}>Try Again</Text>
+          <Text style={styles.subtitle}>An unexpected error occurred. Try reloading.</Text>
+          <Pressable
+            onPress={() => this.setState({ hasError: false })}
+            style={({ pressed }) => [styles.button, pressed && styles.buttonPressed]}
+          >
+            <Text style={styles.buttonText}>Reload</Text>
           </Pressable>
         </View>
       );
@@ -36,10 +43,46 @@ export class ErrorBoundary extends React.Component<Props, State> {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24, backgroundColor: '#f4f6fb' },
-  title: { color: '#b91c1c', fontSize: 18, fontWeight: '800' },
-  message: { color: '#475569', fontSize: 13, textAlign: 'center', marginTop: 8 },
-  note: { color: '#94a3b8', fontSize: 11, textAlign: 'center', marginTop: 8, fontStyle: 'italic' },
-  button: { backgroundColor: '#3157d5', borderRadius: 10, paddingHorizontal: 20, paddingVertical: 12, marginTop: 16 },
-  buttonText: { color: '#fff', fontWeight: '700' },
+  container: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: theme.spacing.xxl,
+    backgroundColor: theme.colors.bg,
+  },
+  iconCircle: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: theme.colors.dangerBg,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: theme.spacing.md,
+  },
+  title: {
+    color: theme.colors.ink,
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  subtitle: {
+    color: theme.colors.inkMuted,
+    fontSize: 13,
+    textAlign: 'center',
+    marginTop: 6,
+  },
+  button: {
+    backgroundColor: theme.colors.brand,
+    borderRadius: theme.radius.pill,
+    paddingHorizontal: theme.spacing.xl,
+    paddingVertical: 11,
+    marginTop: theme.spacing.lg,
+  },
+  buttonPressed: {
+    backgroundColor: theme.colors.brandDark,
+  },
+  buttonText: {
+    color: theme.colors.white,
+    fontWeight: '700',
+    fontSize: 14,
+  },
 });

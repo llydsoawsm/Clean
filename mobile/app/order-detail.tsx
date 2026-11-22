@@ -7,12 +7,11 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useAuthSession } from '@/context/AuthContext';
 import { initDatabase } from '@/db/client';
 import { getOrderById, updateOrderStatus } from '@/db/repositories/orders';
@@ -21,10 +20,22 @@ import { listStatusHistory } from '@/db/repositories/statusHistory';
 import { getCustomerById } from '@/db/repositories/customers';
 import type { CustomerRow, OrderRow, OrderStatus, PaymentMethod, PaymentRow, StatusHistoryRow } from '@/db/types';
 import { formatPHP, formatWeight } from '@/utils/money';
-import { formatDate } from '@/utils/dates';
-import { StatusBadge } from '@/components/StatusBadge';
+import { formatShortDate } from '@/utils/dates';
+import { RushBadge, StatusBadge } from '@/components/StatusBadge';
 import { EmptyState, LoadingState } from '@/components/Feedback';
+import { ScreenHeader } from '@/components/ScreenHeader';
 import { useToast } from '@/components/Toast';
+import {
+  AppButton,
+  Card,
+  Divider,
+  FormInput,
+  KeyValueRow,
+  OptionChips,
+  SectionHeader,
+  useScreenBottomPadding,
+} from '@/components/ui';
+import { ORDER_STATUS_META, shortTicket, theme, type MciIconName } from '@/theme';
 
 const paymentMethods: { key: PaymentMethod; label: string }[] = [
   { key: 'CASH', label: 'Cash' },
@@ -32,10 +43,22 @@ const paymentMethods: { key: PaymentMethod; label: string }[] = [
   { key: 'OTHER', label: 'Other' },
 ];
 
+const PIPELINE_STEPS: OrderStatus[] = ['RECEIVED', 'PROCESSING', 'READY', 'COMPLETED'];
+
+function actionSpec(order: OrderRow): { label: string; icon: MciIconName } {
+  if (order.status === 'RECEIVED') return { label: 'Start Wash', icon: 'washing-machine' };
+  if (order.status === 'PROCESSING') return { label: 'Mark Ready', icon: 'hanger' };
+  if (order.balance_centavos > 0) {
+    return { label: `Collect ${formatPHP(order.balance_centavos)} & Claim`, icon: 'cash' };
+  }
+  return { label: 'Claim Order', icon: 'check-circle-outline' };
+}
+
 export default function OrderDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const session = useAuthSession();
   const toast = useToast();
+  const bottomPadding = useScreenBottomPadding();
 
   const [loading, setLoading] = useState(true);
   const [order, setOrder] = useState<OrderRow | null>(null);
@@ -88,12 +111,12 @@ export default function OrderDetailScreen() {
 
     if (nextStatus === 'COMPLETED' && order.balance_centavos > 0) {
       Alert.alert(
-        'Payment Required',
-        `This order still has an unpaid balance of ${formatPHP(order.balance_centavos)}.\n\nSettle the remaining balance in Cash now and complete the order?`,
+        'Unpaid Balance',
+        `${formatPHP(order.balance_centavos)} remaining. Collect via ${displayMethod(paymentMethod)} and mark claimed?`,
         [
           { text: 'Cancel', style: 'cancel' },
           {
-            text: `Settle ${formatPHP(order.balance_centavos)}`,
+            text: `Collect ${formatPHP(order.balance_centavos)}`,
             onPress: async () => {
               setBusy(true);
               try {
@@ -109,10 +132,10 @@ export default function OrderDetailScreen() {
                 setPaymentAmount('');
                 setPaymentRef('');
                 setPaymentNotes('');
-                toast.show('Balance settled & order completed', 'success');
+                toast.show('Order claimed', 'success');
                 await load();
               } catch (e) {
-                Alert.alert('Error', e instanceof Error ? e.message : 'Unable to settle and complete order.');
+                Alert.alert('Error', e instanceof Error ? e.message : 'Unable to complete order.');
               } finally {
                 setBusy(false);
               }
@@ -126,10 +149,10 @@ export default function OrderDetailScreen() {
     setBusy(true);
     try {
       await updateOrderStatus(order.id, nextStatus, session.user.id);
-      toast.show(`Marked as ${nextStatus}`, 'success');
+      toast.show(ORDER_STATUS_META[nextStatus].label, 'success');
       await load();
     } catch (e) {
-      Alert.alert('Cannot Update Status', e instanceof Error ? e.message : 'Unable to update status.');
+      Alert.alert('Error', e instanceof Error ? e.message : 'Unable to update status.');
     } finally {
       setBusy(false);
     }
@@ -139,7 +162,7 @@ export default function OrderDetailScreen() {
     if (!order || !session || busy) return;
     const val = parseFloat(paymentAmount);
     if (isNaN(val) || val <= 0) {
-      Alert.alert('Invalid Amount', 'Please enter a payment amount greater than zero.');
+      Alert.alert('Invalid Amount', 'Enter a payment amount.');
       return;
     }
     const cents = Math.round(val * 100);
@@ -156,10 +179,10 @@ export default function OrderDetailScreen() {
       setPaymentAmount('');
       setPaymentRef('');
       setPaymentNotes('');
-      toast.show(`Recorded ${formatPHP(cents)} payment`, 'success');
+      toast.show(`Paid ${formatPHP(cents)}`, 'success');
       await load();
     } catch (e) {
-      Alert.alert('Cannot Record Payment', e instanceof Error ? e.message : 'Payment could not be recorded.');
+      Alert.alert('Error', e instanceof Error ? e.message : 'Payment could not be recorded.');
     } finally {
       setBusy(false);
     }
@@ -167,235 +190,278 @@ export default function OrderDetailScreen() {
 
   if (loading) {
     return (
-      <SafeAreaView style={styles.safeArea}>
-        <LoadingState message="Loading order..." />
+      <SafeAreaView style={styles.safeArea} edges={['top']}>
+        <ScreenHeader title="Ticket" />
+        <LoadingState />
       </SafeAreaView>
     );
   }
 
   if (!order) {
     return (
-      <SafeAreaView style={styles.safeArea}>
-        <View style={styles.header}>
-          <Pressable onPress={() => router.back()} style={styles.backButton}>
-            <Ionicons name="chevron-back" size={20} color="#1d4ed8" />
-            <Text style={styles.backText}>Back</Text>
-          </Pressable>
-          <Text style={styles.title}>Order Not Found</Text>
-          <View style={{ width: 50 }} />
-        </View>
-        <EmptyState title="Order Not Found" hint="The requested order could not be located." />
+      <SafeAreaView style={styles.safeArea} edges={['top']}>
+        <ScreenHeader title="Ticket" />
+        <EmptyState icon="basket-outline" title="Order not found" />
       </SafeAreaView>
     );
   }
 
+  const currentIdx = PIPELINE_STEPS.indexOf(order.status);
+  const unitLabel =
+    order.pricing_type_snapshot === 'per_piece'
+      ? `${order.quantity ?? 0} pc`
+      : order.pricing_type_snapshot === 'fixed'
+        ? 'Fixed'
+        : formatWeight(order.weight_grams);
+  const action = actionSpec(order);
+
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView style={styles.safeArea} edges={['top']}>
+      <ScreenHeader title={shortTicket(order.order_number)} />
+
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
-        <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-          {/* Header */}
-          <View style={styles.header}>
-            <Pressable onPress={() => router.back()} style={styles.backButton}>
-              <Ionicons name="chevron-back" size={20} color="#1d4ed8" />
-              <Text style={styles.backText}>Back</Text>
-            </Pressable>
-            <Text style={styles.title}>{order.order_number}</Text>
-            <StatusBadge type="sync" value={order.sync_status} />
-          </View>
-
-          {/* Status Card */}
-          <View style={styles.card}>
-            <View style={styles.cardHeader}>
-              <Text style={styles.customerName}>{order.customer_name_snapshot ?? customer?.name ?? 'Customer'}</Text>
-              <StatusBadge type="order" value={order.status} />
+        <ScrollView
+          contentContainerStyle={[styles.container, { paddingBottom: bottomPadding }]}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          {/* Claim Ticket Hero */}
+          <Card>
+            {/* 4-Step Laundry Pipeline */}
+            <View style={styles.stepperRow}>
+              {PIPELINE_STEPS.map((step, idx) => {
+                const meta = ORDER_STATUS_META[step];
+                const reached = idx <= currentIdx;
+                const isCurrent = idx === currentIdx;
+                const activeColor = ORDER_STATUS_META[order.status].color;
+                return (
+                  <View key={step} style={styles.stepItem}>
+                    <View style={styles.stepTrackRow}>
+                      <View
+                        style={[
+                          styles.stepLine,
+                          idx === 0 && styles.stepLineHidden,
+                          idx <= currentIdx && { backgroundColor: activeColor },
+                        ]}
+                      />
+                      <View
+                        style={[
+                          styles.stepDot,
+                          reached && { backgroundColor: activeColor, borderColor: activeColor },
+                        ]}
+                      >
+                        <MaterialCommunityIcons
+                          name={meta.icon}
+                          size={13}
+                          color={reached ? theme.colors.white : theme.colors.inkMuted}
+                        />
+                      </View>
+                      <View
+                        style={[
+                          styles.stepLine,
+                          idx === PIPELINE_STEPS.length - 1 && styles.stepLineHidden,
+                          idx < currentIdx && { backgroundColor: activeColor },
+                        ]}
+                      />
+                    </View>
+                    <Text
+                      style={[
+                        styles.stepLabel,
+                        reached && { color: theme.colors.ink, fontWeight: isCurrent ? '700' : '600' },
+                      ]}
+                    >
+                      {meta.shortLabel}
+                    </Text>
+                  </View>
+                );
+              })}
             </View>
-            <Text style={styles.serviceName}>
-              {order.service_name_snapshot} •{' '}
-              {order.pricing_type_snapshot === 'per_piece'
-                ? `${order.quantity ?? 0} pc(s)`
-                : order.pricing_type_snapshot === 'fixed'
-                  ? 'Fixed'
-                  : formatWeight(order.weight_grams)}
-            </Text>
-            <Text style={styles.metaText}>Received {formatDate(order.received_at)}</Text>
 
-            {order.status !== 'COMPLETED' && (
+            <Divider />
+
+            <View style={styles.ticketTop}>
               <Pressable
+                onPress={() =>
+                  router.push({ pathname: '/customer-detail' as any, params: { id: order.customer_id } })
+                }
+                style={({ pressed }) => [styles.customerWrap, pressed && styles.pressed]}
+              >
+                <Text style={styles.customerName} numberOfLines={1}>
+                  {order.customer_name_snapshot ?? customer?.name ?? 'Customer'}
+                </Text>
+                <MaterialCommunityIcons name="chevron-right" size={16} color={theme.colors.inkMuted} />
+              </Pressable>
+
+              <View style={styles.badgeRow}>
+                {order.is_rush === 1 ? <RushBadge /> : null}
+                <StatusBadge type="order" value={order.status} />
+              </View>
+            </View>
+
+            <Text style={styles.serviceSummary}>
+              {order.service_name_snapshot} · {unitLabel}
+            </Text>
+            <Text style={styles.ticketMeta}>
+              {formatShortDate(order.received_at)} · {order.order_number}
+            </Text>
+
+            {order.status !== 'COMPLETED' ? (
+              <AppButton
+                variant="primary"
+                icon={action.icon}
+                label={action.label}
                 onPress={advanceStatus}
                 disabled={busy}
-                style={[
-                  styles.statusActionBtn,
-                  order.status === 'READY' && order.balance_centavos > 0 && styles.statusActionBtnPending,
-                  busy && styles.btnDisabled,
-                ]}
-              >
-                <Text style={styles.statusActionText}>
-                  {order.status === 'RECEIVED'
-                    ? 'Mark as Processing / Washing'
-                    : order.status === 'PROCESSING'
-                      ? 'Mark as Ready for Pickup'
-                      : order.balance_centavos > 0
-                        ? `Collect ${formatPHP(order.balance_centavos)} to Complete`
-                        : 'Mark as Completed / Claimed'}
-                </Text>
-              </Pressable>
-            )}
-          </View>
+                style={styles.statusBtnSpacing}
+              />
+            ) : null}
+          </Card>
 
-          {/* Pricing & Payment Card */}
-          <View style={styles.card}>
-            <View style={styles.cardHeader}>
-              <Text style={styles.cardTitle}>Pricing & Payment</Text>
-              <StatusBadge type="payment" value={order.payment_status} />
-            </View>
-            <View style={styles.row}>
-              <Text style={styles.rowLabel}>Base Cost</Text>
-              <Text style={styles.rowValue}>{formatPHP(order.base_cost_centavos)}</Text>
-            </View>
+          {/* Receipt & Payment */}
+          <Card>
+            <SectionHeader
+              title="Receipt"
+              right={<StatusBadge type="payment" value={order.payment_status} />}
+            />
+
+            <KeyValueRow compact label="Base" value={formatPHP(order.base_cost_centavos)} />
             {order.additional_fee_centavos > 0 ? (
-              <View style={styles.row}>
-                <Text style={styles.rowLabel}>Additional Fee</Text>
-                <Text style={styles.rowValue}>{formatPHP(order.additional_fee_centavos)}</Text>
-              </View>
+              <KeyValueRow compact label="Extra" value={formatPHP(order.additional_fee_centavos)} />
             ) : null}
             {order.rush_fee_centavos > 0 ? (
-              <View style={styles.row}>
-                <Text style={styles.rowLabel}>Rush Fee</Text>
-                <Text style={styles.rowValue}>{formatPHP(order.rush_fee_centavos)}</Text>
-              </View>
+              <KeyValueRow compact label="Rush" value={formatPHP(order.rush_fee_centavos)} />
             ) : null}
-            <View style={styles.row}>
-              <Text style={styles.rowLabel}>Total</Text>
-              <Text style={styles.rowValue}>{formatPHP(order.total_centavos)}</Text>
-            </View>
-            <View style={styles.row}>
-              <Text style={styles.rowLabel}>Paid</Text>
-              <Text style={styles.rowValue}>{formatPHP(order.amount_paid_centavos)}</Text>
-            </View>
-            <View style={styles.divider} />
-            <View style={styles.row}>
-              <Text style={styles.rowLabelBold}>Balance</Text>
-              <Text style={styles.rowBalance}>{formatPHP(order.balance_centavos)}</Text>
-            </View>
+            <KeyValueRow compact label="Total" value={formatPHP(order.total_centavos)} emphasis="bold" />
+            <KeyValueRow compact label="Paid" value={formatPHP(order.amount_paid_centavos)} />
+            <Divider />
+            <KeyValueRow
+              compact
+              label="Balance"
+              value={formatPHP(order.balance_centavos)}
+              emphasis="total"
+              valueColor={order.balance_centavos > 0 ? theme.colors.danger : theme.colors.claimed}
+            />
 
             {order.balance_centavos > 0 ? (
               <View style={styles.paySection}>
-                <View style={styles.methodRow}>
-                  {paymentMethods.map((m) => {
-                    const active = paymentMethod === m.key;
-                    return (
-                      <Pressable
-                        key={m.key}
-                        onPress={() => setPaymentMethod(m.key)}
-                        style={[styles.methodChip, active && styles.methodChipActive]}
-                      >
-                        <Text style={[styles.methodText, active && styles.methodTextActive]}>{m.label}</Text>
-                      </Pressable>
-                    );
-                  })}
-                </View>
+                <OptionChips
+                  options={paymentMethods}
+                  value={paymentMethod}
+                  onChange={setPaymentMethod}
+                  layout="equal"
+                />
 
                 <View style={styles.payBox}>
-                  <TextInput
-                    placeholder={`Amount (max ${(order.balance_centavos / 100).toFixed(2)})`}
-                    placeholderTextColor="#94a3b8"
+                  <FormInput
+                    placeholder={`Max ${(order.balance_centavos / 100).toFixed(2)}`}
                     value={paymentAmount}
                     onChangeText={setPaymentAmount}
                     keyboardType="decimal-pad"
-                    style={styles.payInput}
+                    containerStyle={{ flex: 1 }}
                   />
                   <Pressable
                     onPress={() => setPaymentAmount((order.balance_centavos / 100).toFixed(2))}
-                    style={styles.exactBtn}
+                    style={({ pressed }) => [styles.exactBtn, pressed && styles.pressed]}
                   >
                     <Text style={styles.exactBtnText}>Full</Text>
                   </Pressable>
                 </View>
 
                 {paymentMethod !== 'CASH' ? (
-                  <TextInput
-                    placeholder="Reference number (optional)"
-                    placeholderTextColor="#94a3b8"
+                  <FormInput
+                    placeholder="Reference #"
                     value={paymentRef}
                     onChangeText={setPaymentRef}
-                    style={[styles.payInput, { marginTop: 8 }]}
+                    containerStyle={styles.payInputSpacing}
                   />
                 ) : null}
 
-                <TextInput
-                  placeholder="Payment notes (optional)"
-                  placeholderTextColor="#94a3b8"
+                <FormInput
+                  placeholder="Note (optional)"
                   value={paymentNotes}
                   onChangeText={setPaymentNotes}
-                  style={[styles.payInput, { marginTop: 8 }]}
+                  containerStyle={styles.payInputSpacing}
                 />
 
-                <Pressable onPress={handleAddPayment} disabled={busy} style={[styles.payBtn, busy && styles.btnDisabled]}>
-                  <Text style={styles.payBtnText}>{busy ? 'Saving...' : 'Record Payment'}</Text>
-                </Pressable>
+                <AppButton
+                  variant="primary"
+                  size="md"
+                  label={busy ? 'Saving...' : 'Add Payment'}
+                  onPress={handleAddPayment}
+                  disabled={busy}
+                  style={styles.payBtnSpacing}
+                />
               </View>
             ) : (
               <View style={styles.paidInFullBanner}>
-                <Ionicons name="checkmark-circle" size={18} color="#1d4ed8" />
-                <Text style={styles.paidInFullText}>Paid in Full</Text>
+                <MaterialCommunityIcons name="check-circle" size={17} color={theme.colors.claimed} />
+                <Text style={styles.paidInFullText}>Paid in full</Text>
               </View>
             )}
-          </View>
+          </Card>
 
-          {/* Payment History */}
+          {/* Payments History */}
           {payments.length > 0 ? (
-            <View style={styles.card}>
-              <Text style={styles.cardTitle}>Payment History ({payments.length})</Text>
-              {payments.map((p) => (
+            <Card>
+              <SectionHeader title="Payments" style={styles.compactHeader} />
+              {payments.map((p, idx) => (
                 <Pressable
                   key={p.id}
                   onPress={() => router.push({ pathname: '/payment-detail' as any, params: { id: p.id } })}
-                  style={styles.historyRow}
+                  style={({ pressed }) => [
+                    styles.historyRow,
+                    idx > 0 && styles.historyDivider,
+                    pressed && styles.rowPressed,
+                  ]}
                 >
-                  <View>
+                  <View style={{ flex: 1 }}>
                     <Text style={styles.historyTitle}>
-                      {displayMethod(p.method)} {p.reference ? `• Ref: ${p.reference}` : ''}
+                      {displayMethod(p.method)}
+                      {p.reference ? ` · ${p.reference}` : ''}
                     </Text>
-                    <Text style={styles.metaText}>{formatDate(p.created_at)}</Text>
+                    <Text style={styles.metaText}>{formatShortDate(p.created_at)}</Text>
                   </View>
-                  <Text style={styles.amountHighlight}>+{formatPHP(p.amount_centavos)}</Text>
+                  <View style={styles.paymentRight}>
+                    <Text style={styles.amountHighlight}>+{formatPHP(p.amount_centavos)}</Text>
+                    <MaterialCommunityIcons name="chevron-right" size={18} color={theme.colors.inkMuted} />
+                  </View>
                 </Pressable>
               ))}
-            </View>
+            </Card>
           ) : null}
 
-          {/* Customer Information */}
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>Customer Information</Text>
-            <View style={styles.row}>
-              <Text style={styles.rowLabel}>Name</Text>
-              <Text style={styles.rowValue}>{order.customer_name_snapshot ?? customer?.name ?? '-'}</Text>
-            </View>
-            <View style={styles.row}>
-              <Text style={styles.rowLabel}>Contact</Text>
-              <Text style={styles.rowValue}>{customer?.contact_number ?? 'Not available'}</Text>
-            </View>
-            {order.notes ? (
-              <View style={styles.row}>
-                <Text style={styles.rowLabel}>Notes</Text>
-                <Text style={[styles.rowValue, { flex: 1, textAlign: 'right', marginLeft: 12 }]}>{order.notes}</Text>
-              </View>
-            ) : null}
-          </View>
+          {/* Contact & Notes */}
+          {customer?.contact_number || order.notes ? (
+            <Card>
+              {customer?.contact_number ? (
+                <KeyValueRow compact label="Phone" value={customer.contact_number} />
+              ) : null}
+              {order.notes ? (
+                <KeyValueRow
+                  compact
+                  multiline
+                  divider={Boolean(customer?.contact_number)}
+                  label="Note"
+                  value={order.notes}
+                />
+              ) : null}
+            </Card>
+          ) : null}
 
-          {/* Status History */}
+          {/* Activity */}
           {history.length > 0 ? (
-            <View style={styles.card}>
-              <Text style={styles.cardTitle}>Status Timeline</Text>
-              {history.map((h) => (
-                <View key={h.id} style={styles.historyRow}>
-                  <Text style={styles.historyTitle}>
-                    {h.from_status ? `${h.from_status} → ${h.to_status}` : h.to_status}
-                  </Text>
-                  <Text style={styles.metaText}>{formatDate(h.changed_at)}</Text>
-                </View>
-              ))}
-            </View>
+            <Card>
+              <SectionHeader title="Activity" style={styles.compactHeader} />
+              {history.map((h, idx) => {
+                const label = ORDER_STATUS_META[h.to_status]?.label ?? h.to_status;
+                return (
+                  <View key={h.id} style={[styles.historyRow, idx > 0 && styles.historyDivider]}>
+                    <Text style={styles.historyTitle}>{label}</Text>
+                    <Text style={styles.metaText}>{formatShortDate(h.changed_at)}</Text>
+                  </View>
+                );
+              })}
+            </Card>
           ) : null}
         </ScrollView>
       </KeyboardAvoidingView>
@@ -404,76 +470,170 @@ export default function OrderDetailScreen() {
 }
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: '#f8fafc' },
-  container: { padding: 18, paddingBottom: 40 },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 },
-  backButton: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  backText: { color: '#1d4ed8', fontSize: 14, fontWeight: '600' },
-  title: { color: '#0f172a', fontSize: 16, fontWeight: '700' },
-  card: { backgroundColor: '#ffffff', borderRadius: 12, padding: 16, marginBottom: 12, borderWidth: 1, borderColor: '#e2e8f0' },
-  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },
-  cardTitle: { color: '#0f172a', fontSize: 13, fontWeight: '600', marginBottom: 8 },
-  customerName: { color: '#0f172a', fontSize: 15, fontWeight: '700', flex: 1, marginRight: 8 },
-  serviceName: { color: '#475569', fontSize: 13, marginTop: 2 },
-  metaText: { color: '#94a3b8', fontSize: 11, marginTop: 2 },
-  statusActionBtn: { backgroundColor: '#1d4ed8', borderRadius: 8, paddingVertical: 12, alignItems: 'center', marginTop: 14 },
-  statusActionBtnPending: { backgroundColor: '#1e40af', borderWidth: 1, borderColor: '#3b82f6' },
-  btnDisabled: { opacity: 0.6 },
-  statusActionText: { color: '#ffffff', fontSize: 14, fontWeight: '600' },
-  row: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4 },
-  rowLabel: { color: '#64748b', fontSize: 13 },
-  rowLabelBold: { color: '#0f172a', fontSize: 14, fontWeight: '700' },
-  rowValue: { color: '#0f172a', fontSize: 13, fontWeight: '500' },
-  rowBalance: { color: '#1d4ed8', fontSize: 15, fontWeight: '700' },
-  divider: { height: 1, backgroundColor: '#f1f5f9', marginVertical: 8 },
-  paySection: { marginTop: 10 },
-  methodRow: { flexDirection: 'row', gap: 8, marginBottom: 8 },
-  methodChip: { flex: 1, borderWidth: 1, borderColor: '#e2e8f0', borderRadius: 8, paddingVertical: 7, alignItems: 'center' },
-  methodChipActive: { backgroundColor: '#1d4ed8', borderColor: '#1d4ed8' },
-  methodText: { color: '#64748b', fontSize: 12, fontWeight: '600' },
-  methodTextActive: { color: '#ffffff' },
-  payBox: { flexDirection: 'row', gap: 8 },
-  payInput: {
+  safeArea: {
     flex: 1,
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    fontSize: 14,
-    backgroundColor: '#f8fafc',
-    color: '#0f172a',
+    backgroundColor: theme.colors.bg,
   },
-  exactBtn: {
-    backgroundColor: '#eff6ff',
+  container: {
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: theme.spacing.sm,
+  },
+  stepperRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginBottom: theme.spacing.sm,
+  },
+  stepItem: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  stepTrackRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    width: '100%',
+  },
+  stepLine: {
+    flex: 1,
+    height: 2,
+    backgroundColor: theme.colors.border,
+  },
+  stepLineHidden: {
+    backgroundColor: 'transparent',
+  },
+  stepDot: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: theme.colors.surfaceAlt,
     borderWidth: 1,
-    borderColor: '#bfdbfe',
-    borderRadius: 8,
-    paddingHorizontal: 14,
+    borderColor: theme.colors.border,
+    alignItems: 'center',
     justifyContent: 'center',
   },
-  exactBtnText: { color: '#1d4ed8', fontSize: 12, fontWeight: '700' },
-  payBtn: { backgroundColor: '#1d4ed8', borderRadius: 8, paddingVertical: 11, alignItems: 'center', marginTop: 10 },
-  payBtnText: { color: '#ffffff', fontSize: 13, fontWeight: '600' },
+  stepLabel: {
+    color: theme.colors.inkMuted,
+    fontSize: 11,
+    fontWeight: '500',
+    marginTop: 5,
+  },
+  ticketTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 8,
+  },
+  customerWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    flex: 1,
+  },
+  customerName: {
+    color: theme.colors.ink,
+    fontSize: 17,
+    fontWeight: '800',
+    flexShrink: 1,
+  },
+  badgeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  serviceSummary: {
+    color: theme.colors.inkSecondary,
+    fontSize: 14,
+    fontWeight: '600',
+    marginTop: 4,
+  },
+  ticketMeta: {
+    color: theme.colors.inkMuted,
+    fontSize: 12,
+    marginTop: 2,
+  },
+  statusBtnSpacing: {
+    marginTop: theme.spacing.lg,
+  },
+  paySection: {
+    marginTop: theme.spacing.md,
+  },
+  payBox: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 8,
+  },
+  exactBtn: {
+    backgroundColor: theme.colors.brandSoft,
+    borderWidth: 1,
+    borderColor: theme.colors.brandBorder,
+    borderRadius: theme.radius.md,
+    paddingHorizontal: 16,
+    minHeight: 44,
+    justifyContent: 'center',
+  },
+  exactBtnText: {
+    color: theme.colors.brand,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  payInputSpacing: {
+    marginTop: 8,
+  },
+  payBtnSpacing: {
+    marginTop: 10,
+  },
   paidInFullBanner: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    backgroundColor: '#eff6ff',
-    borderRadius: 8,
+    backgroundColor: theme.colors.claimedBg,
+    borderRadius: theme.radius.md,
     padding: 10,
-    marginTop: 10,
+    marginTop: theme.spacing.md,
     justifyContent: 'center',
   },
-  paidInFullText: { color: '#1d4ed8', fontSize: 13, fontWeight: '600' },
+  paidInFullText: {
+    color: theme.colors.claimed,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  compactHeader: {
+    marginBottom: 4,
+  },
   historyRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingVertical: 8,
-    borderTopWidth: 1,
-    borderTopColor: '#f1f5f9',
+    paddingVertical: 10,
   },
-  historyTitle: { color: '#0f172a', fontSize: 13, fontWeight: '600' },
-  amountHighlight: { color: '#1d4ed8', fontSize: 13, fontWeight: '700' },
+  historyDivider: {
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.divider,
+  },
+  rowPressed: {
+    backgroundColor: theme.colors.surfaceWarm,
+  },
+  historyTitle: {
+    color: theme.colors.ink,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  metaText: {
+    color: theme.colors.inkMuted,
+    fontSize: 12,
+    marginTop: 2,
+  },
+  paymentRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  amountHighlight: {
+    color: theme.colors.claimed,
+    fontSize: 13,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+  },
+  pressed: {
+    opacity: theme.layout.pressedOpacity,
+  },
 });

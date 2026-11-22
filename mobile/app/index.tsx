@@ -9,18 +9,25 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useFocusEffect } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useAuth } from '@/context/AuthContext';
 import { initDatabase } from '@/db/client';
-import { getOrderCounts } from '@/db/repositories/orders';
+import { getOrderCounts, listOrders } from '@/db/repositories/orders';
 import { getPaymentSummary } from '@/db/repositories/payments';
+import type { OrderRow } from '@/db/types';
 import { getSyncStatus, runSync } from '@/sync/engine';
 import { formatPHP } from '@/utils/money';
+import { formatTodayHeader } from '@/utils/dates';
 import { LoadingState } from '@/components/Feedback';
-import { OfflineBanner } from '@/components/OfflineBanner';
+import { TabHeader } from '@/components/ScreenHeader';
+import { useBottomNavPadding } from '@/components/BottomTabBar';
+import { StatusBadge } from '@/components/StatusBadge';
+import { Card, SectionHeader } from '@/components/ui';
+import { ORDER_STATUS_META, shortTicket, theme } from '@/theme';
 
 export default function HomeScreen() {
   const { state } = useAuth();
+  const bottomNavPadding = useBottomNavPadding();
   const [orderCounts, setOrderCounts] = useState<Record<string, number>>({
     ALL: 0,
     RECEIVED: 0,
@@ -32,7 +39,8 @@ export default function HomeScreen() {
     collectedToday: 0,
     outstandingBalance: 0,
   });
-  const [bannerStatus, setBannerStatus] = useState<'online' | 'offline' | 'syncing' | 'pending' | 'synced' | 'failed'>('online');
+  const [activeOrders, setActiveOrders] = useState<OrderRow[]>([]);
+  const [syncState, setSyncState] = useState<'online' | 'offline' | 'syncing' | 'pending' | 'synced' | 'failed'>('online');
   const [pendingCount, setPendingCount] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -48,22 +56,24 @@ export default function HomeScreen() {
     if (!session) return;
     try {
       await initDatabase();
-      const [counts, summary, sync] = await Promise.all([
+      const [counts, summary, sync, recent] = await Promise.all([
         getOrderCounts(session.shop.id),
         getPaymentSummary(session.shop.id),
         getSyncStatus(session.shop.id),
+        listOrders({ shop_id: session.shop.id, limit: 12 }),
       ]);
       setOrderCounts(counts);
       setPaymentSummary({
         collectedToday: summary.collectedToday,
         outstandingBalance: summary.outstandingBalance,
       });
+      setActiveOrders(recent.filter((o) => o.status !== 'COMPLETED').slice(0, 5));
       setPendingCount(sync.pending);
-      if (sync.status === 'syncing') setBannerStatus('syncing');
-      else if (sync.status === 'offline') setBannerStatus('offline');
-      else if (sync.pending > 0) setBannerStatus(sync.status === 'failed' ? 'failed' : 'pending');
-      else if (sync.status === 'synced') setBannerStatus('synced');
-      else setBannerStatus('online');
+      if (sync.status === 'syncing') setSyncState('syncing');
+      else if (sync.status === 'offline') setSyncState('offline');
+      else if (sync.pending > 0) setSyncState(sync.status === 'failed' ? 'failed' : 'pending');
+      else if (sync.status === 'synced') setSyncState('synced');
+      else setSyncState('online');
     } catch (e) {
       console.warn('[Home] load error:', e);
     }
@@ -76,7 +86,7 @@ export default function HomeScreen() {
   );
 
   const handleRefresh = async () => {
-    if (!session) return;
+    if (!session || refreshing) return;
     setRefreshing(true);
     try {
       await runSync(session.shop.id, session.token).catch(() => {});
@@ -88,307 +98,439 @@ export default function HomeScreen() {
 
   if (state.status === 'loading' || !session) {
     return (
-      <SafeAreaView style={styles.safeArea}>
-        <LoadingState message="Restoring session..." />
+      <SafeAreaView style={styles.safeArea} edges={['top']}>
+        <LoadingState />
       </SafeAreaView>
     );
   }
 
+  const syncLabel =
+    refreshing || syncState === 'syncing'
+      ? 'Syncing'
+      : syncState === 'offline'
+        ? 'Offline'
+        : pendingCount > 0
+          ? `${pendingCount} pending`
+          : 'Synced';
+
+  const syncDotColor =
+    refreshing || syncState === 'syncing'
+      ? theme.colors.brand
+      : syncState === 'offline'
+        ? theme.colors.inkMuted
+        : pendingCount > 0
+          ? theme.colors.readyDot
+          : theme.colors.claimed;
+
+  const readyCount = orderCounts.READY ?? 0;
+
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView style={styles.safeArea} edges={['top']}>
+      <TabHeader
+        title={session.shop.name}
+        subtitle={formatTodayHeader()}
+        right={
+          <Pressable
+            onPress={handleRefresh}
+            style={({ pressed }) => [styles.syncPill, pressed && styles.pressed]}
+            accessibilityLabel="Sync status"
+          >
+            <View style={[styles.syncDot, { backgroundColor: syncDotColor }]} />
+            <Text style={styles.syncText}>{syncLabel}</Text>
+          </Pressable>
+        }
+      />
+
       <ScrollView
-        contentContainerStyle={styles.scroll}
+        style={{ flex: 1 }}
+        contentContainerStyle={[styles.scroll, { paddingBottom: bottomNavPadding }]}
         showsVerticalScrollIndicator={false}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor="#1d4ed8" />}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={handleRefresh}
+            tintColor={theme.colors.brand}
+            colors={[theme.colors.brand]}
+          />
+        }
       >
-        {/* Minimalist Blue Header */}
-        <View style={styles.header}>
-          <View style={styles.headerLeft}>
-            <View style={styles.brandIconBox}>
-              <Ionicons name="water" size={20} color="#1d4ed8" />
-            </View>
-            <View style={{ flexShrink: 1 }}>
-              <Text style={styles.shopTitle} numberOfLines={1}>
-                {session.shop.name}
-              </Text>
-              <View style={styles.statusIndicator}>
-                <View style={[styles.blueDot, bannerStatus === 'offline' && styles.offlineDot]} />
-                <Text style={styles.statusLabel}>
-                  {pendingCount > 0 ? `${pendingCount} pending sync` : 'Offline-first • Sync ready'}
-                </Text>
-              </View>
-            </View>
-          </View>
-          <Pressable
-            onPress={() => router.push('/settings' as any)}
-            style={({ pressed }) => [styles.iconBtn, pressed && styles.btnPressed]}
-            accessibilityLabel="Settings"
-          >
-            <Ionicons name="settings-outline" size={19} color="#1e40af" />
-          </Pressable>
-        </View>
-
-        {bannerStatus !== 'online' && bannerStatus !== 'synced' ? (
-          <OfflineBanner status={bannerStatus} />
-        ) : null}
-
-        {/* Primary Action Button */}
+        {/* Counter Sales Card */}
         <Pressable
-          onPress={() => router.push('/receive' as any)}
-          style={({ pressed }) => [styles.primaryBtn, pressed && styles.primaryBtnPressed]}
+          onPress={() => router.push('/payments' as any)}
+          style={({ pressed }) => [styles.heroCard, pressed && styles.heroPressed]}
         >
-          <View style={styles.primaryBtnLeft}>
-            <View style={styles.primaryPlusBox}>
-              <Ionicons name="add" size={20} color="#1d4ed8" />
-            </View>
-            <Text style={styles.primaryBtnText}>New Laundry Order</Text>
+          <View style={styles.heroCol}>
+            <Text style={styles.heroLabel}>Today</Text>
+            <Text style={styles.heroAmount}>{formatPHP(paymentSummary.collectedToday)}</Text>
           </View>
-          <Ionicons name="chevron-forward" size={18} color="#93c5fd" />
-        </Pressable>
-
-        {/* Active Orders Overview */}
-        <View style={styles.sectionHead}>
-          <Text style={styles.sectionTitle}>Orders Overview</Text>
-          <Text style={styles.sectionBadge}>
-            {orderCounts.ALL === 0 ? '0 orders' : `${orderCounts.ALL} total`}
-          </Text>
-        </View>
-
-        <View style={styles.orderRow}>
-          <Pressable
-            onPress={() => router.push({ pathname: '/orders' as any, params: { status: 'RECEIVED' } })}
-            style={({ pressed }) => [styles.orderCard, pressed && styles.cardPressed]}
-          >
-            <Text style={styles.orderCount}>{orderCounts.RECEIVED ?? 0}</Text>
-            <Text style={styles.orderLabel}>Received</Text>
-          </Pressable>
-
-          <Pressable
-            onPress={() => router.push({ pathname: '/orders' as any, params: { status: 'PROCESSING' } })}
-            style={({ pressed }) => [styles.orderCard, pressed && styles.cardPressed]}
-          >
-            <Text style={styles.orderCount}>{orderCounts.PROCESSING ?? 0}</Text>
-            <Text style={styles.orderLabel}>Washing</Text>
-          </Pressable>
-
-          <Pressable
-            onPress={() => router.push({ pathname: '/orders' as any, params: { status: 'READY' } })}
-            style={({ pressed }) => [styles.orderCard, styles.orderCardHighlight, pressed && styles.cardPressed]}
-          >
-            <Text style={[styles.orderCount, styles.orderCountHighlight]}>{orderCounts.READY ?? 0}</Text>
-            <Text style={[styles.orderLabel, styles.orderLabelHighlight]}>Ready</Text>
-          </Pressable>
-        </View>
-
-        {/* Financial Summary */}
-        <Pressable
-          onPress={() => router.push('/reports' as any)}
-          style={({ pressed }) => [styles.summaryCard, pressed && styles.cardPressed]}
-        >
-          <View style={styles.summaryCol}>
-            <Text style={styles.summaryCaption}>Collected Today</Text>
-            <Text style={styles.summaryAmount}>{formatPHP(paymentSummary.collectedToday)}</Text>
-          </View>
-
-          <View style={styles.summaryDivider} />
-
-          <View style={styles.summaryCol}>
-            <Text style={styles.summaryCaption}>Unpaid Balance</Text>
-            <Text style={[styles.summaryAmount, styles.summaryAmountMuted]}>
+          <View style={styles.heroDivider} />
+          <View style={[styles.heroCol, styles.heroRight]}>
+            <Text style={styles.heroLabel}>Unpaid</Text>
+            <Text
+              style={[
+                styles.heroSecondary,
+                paymentSummary.outstandingBalance > 0 && styles.heroUnpaid,
+              ]}
+            >
               {formatPHP(paymentSummary.outstandingBalance)}
             </Text>
           </View>
         </Pressable>
 
-        {/* Management Grid */}
-        <View style={styles.sectionHead}>
-          <Text style={styles.sectionTitle}>Manage</Text>
+        {/* Laundry Queue Strip */}
+        <View style={styles.queueRow}>
+          <Pressable
+            onPress={() => router.replace({ pathname: '/orders' as any, params: { status: 'RECEIVED' } })}
+            style={({ pressed }) => [styles.queueTile, pressed && styles.pressed]}
+          >
+            <View style={[styles.queueIcon, { backgroundColor: theme.colors.receivedBg }]}>
+              <MaterialCommunityIcons name="basket-outline" size={20} color={theme.colors.received} />
+            </View>
+            <Text style={styles.queueCount}>{orderCounts.RECEIVED ?? 0}</Text>
+            <Text style={styles.queueLabel}>Drop-off</Text>
+          </Pressable>
+
+          <Pressable
+            onPress={() => router.replace({ pathname: '/orders' as any, params: { status: 'PROCESSING' } })}
+            style={({ pressed }) => [styles.queueTile, pressed && styles.pressed]}
+          >
+            <View style={[styles.queueIcon, { backgroundColor: theme.colors.washingBg }]}>
+              <MaterialCommunityIcons name="washing-machine" size={20} color={theme.colors.washing} />
+            </View>
+            <Text style={styles.queueCount}>{orderCounts.PROCESSING ?? 0}</Text>
+            <Text style={styles.queueLabel}>Washing</Text>
+          </Pressable>
+
+          <Pressable
+            onPress={() => router.replace({ pathname: '/orders' as any, params: { status: 'READY' } })}
+            style={({ pressed }) => [
+              styles.queueTile,
+              readyCount > 0 && styles.queueTileReady,
+              pressed && styles.pressed,
+            ]}
+          >
+            <View style={[styles.queueIcon, { backgroundColor: theme.colors.readyBg }]}>
+              <MaterialCommunityIcons name="hanger" size={20} color={theme.colors.ready} />
+            </View>
+            <Text style={[styles.queueCount, readyCount > 0 && { color: theme.colors.ready }]}>
+              {readyCount}
+            </Text>
+            <Text style={[styles.queueLabel, readyCount > 0 && { color: theme.colors.ready, fontWeight: '600' }]}>
+              Ready
+            </Text>
+          </Pressable>
         </View>
 
-        <View style={styles.grid}>
-          <Pressable
-            onPress={() => router.push('/orders' as any)}
-            style={({ pressed }) => [styles.gridItem, pressed && styles.cardPressed]}
-          >
-            <View style={styles.gridIconCircle}>
-              <Ionicons name="receipt-outline" size={20} color="#1d4ed8" />
-            </View>
-            <Text style={styles.gridTitle}>Orders</Text>
-          </Pressable>
-
-          <Pressable
-            onPress={() => router.push('/customers' as any)}
-            style={({ pressed }) => [styles.gridItem, pressed && styles.cardPressed]}
-          >
-            <View style={styles.gridIconCircle}>
-              <Ionicons name="people-outline" size={20} color="#1d4ed8" />
-            </View>
-            <Text style={styles.gridTitle}>Customers</Text>
-          </Pressable>
-
+        {/* Quick Links */}
+        <View style={styles.quickRow}>
           <Pressable
             onPress={() => router.push('/services' as any)}
-            style={({ pressed }) => [styles.gridItem, pressed && styles.cardPressed]}
+            style={({ pressed }) => [styles.quickPill, pressed && styles.pressed]}
           >
-            <View style={styles.gridIconCircle}>
-              <Ionicons name="pricetag-outline" size={20} color="#1d4ed8" />
-            </View>
-            <Text style={styles.gridTitle}>Services</Text>
-          </Pressable>
-
-          <Pressable
-            onPress={() => router.push('/payments' as any)}
-            style={({ pressed }) => [styles.gridItem, pressed && styles.cardPressed]}
-          >
-            <View style={styles.gridIconCircle}>
-              <Ionicons name="wallet-outline" size={20} color="#1d4ed8" />
-            </View>
-            <Text style={styles.gridTitle}>Payments</Text>
+            <MaterialCommunityIcons name="tag-outline" size={17} color={theme.colors.brand} />
+            <Text style={styles.quickText}>Services</Text>
           </Pressable>
 
           <Pressable
             onPress={() => router.push('/reports' as any)}
-            style={({ pressed }) => [styles.gridItem, pressed && styles.cardPressed]}
+            style={({ pressed }) => [styles.quickPill, pressed && styles.pressed]}
           >
-            <View style={styles.gridIconCircle}>
-              <Ionicons name="bar-chart-outline" size={20} color="#1d4ed8" />
-            </View>
-            <Text style={styles.gridTitle}>Reports</Text>
-          </Pressable>
-
-          <Pressable
-            onPress={() => router.push('/settings' as any)}
-            style={({ pressed }) => [styles.gridItem, pressed && styles.cardPressed]}
-          >
-            <View style={styles.gridIconCircle}>
-              <Ionicons name="settings-outline" size={20} color="#1d4ed8" />
-            </View>
-            <Text style={styles.gridTitle}>Settings</Text>
+            <MaterialCommunityIcons name="chart-bar" size={17} color={theme.colors.brand} />
+            <Text style={styles.quickText}>Reports</Text>
           </Pressable>
         </View>
 
-        <View style={styles.footer}>
-          <Text style={styles.footerText}>{session.shop.name} • Pull down to sync</Text>
-        </View>
+        {/* Active Laundry List */}
+        <SectionHeader
+          title="In the Shop"
+          right={
+            <Pressable onPress={() => router.replace('/orders' as any)} hitSlop={8}>
+              <Text style={styles.seeAll}>See all</Text>
+            </Pressable>
+          }
+        />
+
+        <Card noPadding>
+          {activeOrders.length === 0 ? (
+            <View style={styles.emptyRow}>
+              <Text style={styles.emptyText}>No active laundry</Text>
+              <Pressable
+                onPress={() => router.push('/receive' as any)}
+                style={({ pressed }) => [styles.emptyBtn, pressed && styles.emptyBtnPressed]}
+              >
+                <MaterialCommunityIcons name="plus" size={16} color={theme.colors.white} />
+                <Text style={styles.emptyBtnText}>Drop-off</Text>
+              </Pressable>
+            </View>
+          ) : (
+            activeOrders.map((o, idx) => {
+              const meta = ORDER_STATUS_META[o.status];
+              return (
+                <Pressable
+                  key={o.id}
+                  onPress={() => router.push({ pathname: '/order-detail' as any, params: { id: o.id } })}
+                  style={({ pressed }) => [
+                    styles.ticketRow,
+                    idx > 0 && styles.ticketDivider,
+                    pressed && styles.rowPressed,
+                  ]}
+                >
+                  <View style={[styles.ticketIcon, { backgroundColor: meta.bg }]}>
+                    <MaterialCommunityIcons name={meta.icon} size={18} color={meta.color} />
+                  </View>
+
+                  <View style={styles.ticketMain}>
+                    <Text style={styles.ticketCustomer} numberOfLines={1}>
+                      {o.customer_name_snapshot ?? 'Customer'}
+                    </Text>
+                    <Text style={styles.ticketSub} numberOfLines={1}>
+                      {o.service_name_snapshot} · {shortTicket(o.order_number)}
+                    </Text>
+                  </View>
+
+                  <View style={styles.ticketRight}>
+                    <StatusBadge type="order" value={o.status} />
+                    <Text
+                      style={[
+                        styles.ticketAmount,
+                        o.balance_centavos > 0 && styles.ticketUnpaid,
+                      ]}
+                    >
+                      {o.balance_centavos > 0
+                        ? `Unpaid ${formatPHP(o.balance_centavos)}`
+                        : formatPHP(o.total_centavos)}
+                    </Text>
+                  </View>
+                </Pressable>
+              );
+            })
+          )}
+        </Card>
       </ScrollView>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: '#f8fafc' },
-  scroll: { paddingHorizontal: 20, paddingTop: 12, paddingBottom: 28 },
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 16,
-    marginTop: 4,
-  },
-  headerLeft: { flexDirection: 'row', alignItems: 'center', gap: 12, flex: 1, marginRight: 10 },
-  brandIconBox: {
-    width: 40,
-    height: 40,
-    borderRadius: 10,
-    backgroundColor: '#eff6ff',
-    borderWidth: 1,
-    borderColor: '#dbeafe',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  shopTitle: { color: '#0f172a', fontSize: 19, fontWeight: '700', letterSpacing: -0.3 },
-  statusIndicator: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 2 },
-  blueDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#2563eb' },
-  offlineDot: { backgroundColor: '#94a3b8' },
-  statusLabel: { color: '#64748b', fontSize: 12, fontWeight: '500' },
-  iconBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 10,
-    backgroundColor: '#ffffff',
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  btnPressed: { opacity: 0.7 },
-  primaryBtn: {
-    backgroundColor: '#1d4ed8',
-    borderRadius: 12,
-    paddingVertical: 15,
-    paddingHorizontal: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 24,
-  },
-  primaryBtnPressed: { backgroundColor: '#1e40af' },
-  primaryBtnLeft: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  primaryPlusBox: {
-    width: 28,
-    height: 28,
-    borderRadius: 6,
-    backgroundColor: '#ffffff',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  primaryBtnText: { color: '#ffffff', fontSize: 15, fontWeight: '600', letterSpacing: -0.2 },
-  sectionHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
-  sectionTitle: { color: '#0f172a', fontSize: 14, fontWeight: '600', letterSpacing: -0.2 },
-  sectionBadge: { color: '#64748b', fontSize: 12, fontWeight: '500' },
-  orderRow: { flexDirection: 'row', gap: 10, marginBottom: 12 },
-  orderCard: {
+  safeArea: {
     flex: 1,
-    backgroundColor: '#ffffff',
-    borderRadius: 12,
+    backgroundColor: theme.colors.bg,
+  },
+  scroll: {
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: theme.spacing.xs,
+  },
+  syncPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: theme.colors.surface,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.radius.pill,
+    paddingHorizontal: 11,
+    paddingVertical: 6,
+  },
+  syncDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+  },
+  syncText: {
+    color: theme.colors.inkSecondary,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  pressed: {
+    opacity: theme.layout.pressedOpacity,
+  },
+  heroCard: {
+    backgroundColor: theme.colors.brand,
+    borderRadius: theme.radius.xl,
+    padding: theme.spacing.lg,
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: theme.spacing.md,
+    ...theme.shadow.card,
+  },
+  heroPressed: {
+    backgroundColor: theme.colors.brandDark,
+  },
+  heroCol: {
+    flex: 1,
+  },
+  heroRight: {
+    alignItems: 'flex-end',
+  },
+  heroDivider: {
+    width: 1,
+    height: 36,
+    backgroundColor: theme.colors.brandOverlay,
+    marginHorizontal: theme.spacing.md,
+  },
+  heroLabel: {
+    color: theme.colors.brandOnMuted,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  heroAmount: {
+    color: theme.colors.white,
+    fontSize: 26,
+    fontWeight: '800',
+    marginTop: 2,
+    fontVariant: ['tabular-nums'],
+  },
+  heroSecondary: {
+    color: theme.colors.white,
+    fontSize: 17,
+    fontWeight: '700',
+    marginTop: 4,
+    fontVariant: ['tabular-nums'],
+  },
+  heroUnpaid: {
+    color: theme.colors.readyBg,
+  },
+  queueRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: theme.spacing.md,
+  },
+  queueTile: {
+    flex: 1,
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.lg,
     paddingVertical: 14,
     paddingHorizontal: 8,
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: '#e2e8f0',
+    borderColor: theme.colors.border,
+    ...theme.shadow.card,
   },
-  orderCardHighlight: { backgroundColor: '#eff6ff', borderColor: '#bfdbfe' },
-  orderCount: { color: '#0f172a', fontSize: 22, fontWeight: '700' },
-  orderCountHighlight: { color: '#1d4ed8' },
-  orderLabel: { color: '#64748b', fontSize: 12, fontWeight: '500', marginTop: 2 },
-  orderLabelHighlight: { color: '#1e40af', fontWeight: '600' },
-  summaryCard: {
-    backgroundColor: '#ffffff',
-    borderRadius: 12,
-    paddingVertical: 14,
-    paddingHorizontal: 16,
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 24,
+  queueTileReady: {
+    borderColor: theme.colors.readyBorder,
+    backgroundColor: theme.colors.readySurface,
   },
-  summaryCol: { flex: 1 },
-  summaryCaption: { color: '#64748b', fontSize: 11, fontWeight: '500', marginBottom: 3 },
-  summaryAmount: { color: '#0f172a', fontSize: 16, fontWeight: '700' },
-  summaryAmountMuted: { color: '#1e40af' },
-  summaryDivider: { width: 1, height: 30, backgroundColor: '#f1f5f9', marginHorizontal: 12 },
-  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 24 },
-  gridItem: {
-    width: '31%',
-    backgroundColor: '#ffffff',
-    borderRadius: 12,
-    paddingVertical: 16,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-  },
-  gridIconCircle: {
-    width: 38,
-    height: 38,
-    borderRadius: 10,
-    backgroundColor: '#eff6ff',
+  queueIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 8,
   },
-  gridTitle: { color: '#1e293b', fontSize: 12, fontWeight: '600' },
-  cardPressed: { opacity: 0.7 },
-  footer: { alignItems: 'center', paddingVertical: 8 },
-  footerText: { color: '#94a3b8', fontSize: 11, fontWeight: '500' },
+  queueCount: {
+    color: theme.colors.ink,
+    fontSize: 22,
+    fontWeight: '800',
+    fontVariant: ['tabular-nums'],
+  },
+  queueLabel: {
+    color: theme.colors.inkSecondary,
+    fontSize: 12,
+    fontWeight: '500',
+    marginTop: 2,
+  },
+  quickRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: theme.spacing.xl,
+  },
+  quickPill: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: theme.colors.surface,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.radius.md,
+    paddingVertical: 11,
+    ...theme.shadow.card,
+  },
+  quickText: {
+    color: theme.colors.ink,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  seeAll: {
+    color: theme.colors.brand,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  emptyRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: theme.spacing.lg,
+  },
+  emptyText: {
+    color: theme.colors.inkMuted,
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  emptyBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: theme.colors.brand,
+    borderRadius: theme.radius.pill,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  emptyBtnPressed: {
+    backgroundColor: theme.colors.brandDark,
+  },
+  emptyBtnText: {
+    color: theme.colors.white,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  ticketRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 13,
+    paddingHorizontal: theme.spacing.md,
+    gap: 12,
+  },
+  ticketDivider: {
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.divider,
+  },
+  rowPressed: {
+    backgroundColor: theme.colors.surfaceWarm,
+  },
+  ticketIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  ticketMain: {
+    flex: 1,
+  },
+  ticketCustomer: {
+    color: theme.colors.ink,
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  ticketSub: {
+    color: theme.colors.inkMuted,
+    fontSize: 12,
+    marginTop: 2,
+  },
+  ticketRight: {
+    alignItems: 'flex-end',
+    gap: 4,
+  },
+  ticketAmount: {
+    color: theme.colors.inkSecondary,
+    fontSize: 12,
+    fontWeight: '600',
+    fontVariant: ['tabular-nums'],
+  },
+  ticketUnpaid: {
+    color: theme.colors.danger,
+  },
 });

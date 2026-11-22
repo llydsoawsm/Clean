@@ -7,12 +7,12 @@
     "userInterfaceStyle": "light",
     "scheme": "clean",
     "description": "Offline-first laundry shop management — Clean",
-    "primaryColor": "#1d4ed8",
+    "primaryColor": "#0E6BA8",
     "icon": "./assets/icon.png",
     "splash": {
       "image": "./assets/splash.png",
       "resizeMode": "contain",
-      "backgroundColor": "#f8fafc"
+      "backgroundColor": "#F5F3EE"
     },
     "assetBundlePatterns": [
       "**/*"
@@ -23,7 +23,7 @@
       "splash": {
         "image": "./assets/splash.png",
         "resizeMode": "contain",
-        "backgroundColor": "#f8fafc"
+        "backgroundColor": "#F5F3EE"
       },
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
@@ -32,12 +32,12 @@
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#f8fafc"
+        "backgroundColor": "#F5F3EE"
       },
       "splash": {
         "image": "./assets/splash.png",
         "resizeMode": "contain",
-        "backgroundColor": "#f8fafc"
+        "backgroundColor": "#F5F3EE"
       },
       "package": "com.clean.laundry"
     },

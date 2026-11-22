@@ -1,31 +1,39 @@
 import { useCallback, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
   Platform,
   Pressable,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useFocusEffect } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useAuth } from '@/context/AuthContext';
 import { initDatabase } from '@/db/client';
 import { getSyncStatus, runSync, type SyncStatus } from '@/sync/engine';
-import { formatDate } from '@/utils/dates';
+import { formatShortDate } from '@/utils/dates';
 import { formatPHP } from '@/utils/money';
+import { LoadingState } from '@/components/Feedback';
+import { TabHeader } from '@/components/ScreenHeader';
 import { useToast } from '@/components/Toast';
+import { useBottomNavPadding } from '@/components/BottomTabBar';
+import { AppButton, Card, FormField, FormInput, KeyValueRow } from '@/components/ui';
+import { theme } from '@/theme';
 
 export default function SettingsScreen() {
   const { state, logout, updateShop } = useAuth();
+  const bottomNavPadding = useBottomNavPadding();
   const toast = useToast();
   const session = state.status === 'authenticated' ? state.session : null;
 
   const [syncing, setSyncing] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [syncInfo, setSyncInfo] = useState<{ status: SyncStatus; pending: number; lastSyncAt: string | null }>({
     status: 'idle',
     pending: 0,
@@ -58,6 +66,17 @@ export default function SettingsScreen() {
     }, [loadSyncStatus])
   );
 
+  const handleRefresh = async () => {
+    if (!session || refreshing) return;
+    setRefreshing(true);
+    try {
+      await runSync(session.shop.id, session.token).catch(() => {});
+      await loadSyncStatus();
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
   const handleSync = async () => {
     if (!session || syncing) return;
     setSyncing(true);
@@ -65,14 +84,14 @@ export default function SettingsScreen() {
       const res = await runSync(session.shop.id, session.token);
       await loadSyncStatus();
       if (res.status === 'offline') {
-        Alert.alert('Offline', 'Clean server is currently unreachable. Your local changes are safe and will sync later.');
+        Alert.alert('Offline', 'Server unreachable right now. Changes stay saved on this device.');
       } else if (res.status === 'failed') {
-        Alert.alert('Sync Incomplete', res.error ?? `${res.pendingAfter} change(s) still pending.`);
+        Alert.alert('Sync Incomplete', res.error ?? `${res.pendingAfter} change(s) pending.`);
       } else {
-        toast.show(`Synced! Pushed ${res.pushed}, pulled ${res.pulled}`, 'success');
+        toast.show('Synced', 'success');
       }
     } catch (e) {
-      Alert.alert('Sync Failed', e instanceof Error ? e.message : 'Unable to synchronize right now.');
+      Alert.alert('Sync Failed', e instanceof Error ? e.message : 'Unable to sync right now.');
     } finally {
       setSyncing(false);
     }
@@ -80,7 +99,7 @@ export default function SettingsScreen() {
 
   const handleSaveShop = async () => {
     if (!shopName.trim() || shopName.trim().length < 2) {
-      Alert.alert('Invalid Name', 'Shop name must be at least 2 characters.');
+      Alert.alert('Required', 'Shop name must be at least 2 characters.');
       return;
     }
     const rushNum = parseFloat(rushFee);
@@ -95,9 +114,9 @@ export default function SettingsScreen() {
         rush_fee_centavos: rushCentavos,
       });
       setEditingShop(false);
-      toast.show('Shop details updated', 'success');
+      toast.show('Shop updated', 'success');
     } catch (e) {
-      Alert.alert('Save Failed', e instanceof Error ? e.message : 'Unable to save shop details.');
+      Alert.alert('Save Failed', e instanceof Error ? e.message : 'Unable to update shop.');
     } finally {
       setSavingShop(false);
     }
@@ -107,8 +126,8 @@ export default function SettingsScreen() {
     Alert.alert(
       'Log Out',
       syncInfo.pending > 0
-        ? `You have ${syncInfo.pending} pending offline change(s). Logging out keeps your local data safe until you sign back in.`
-        : 'Are you sure you want to log out?',
+        ? `${syncInfo.pending} change(s) not synced yet. Your data stays on this device.`
+        : 'Sign out of this shop?',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -123,54 +142,53 @@ export default function SettingsScreen() {
     );
   };
 
-  if (!session) return null;
+  if (!session) {
+    return (
+      <SafeAreaView style={styles.safeArea} edges={['top']}>
+        <LoadingState />
+      </SafeAreaView>
+    );
+  }
+
+  const syncSubtitle =
+    syncInfo.pending > 0
+      ? `${syncInfo.pending} pending`
+      : syncInfo.lastSyncAt
+        ? `Synced · ${formatShortDate(syncInfo.lastSyncAt)}`
+        : 'Not synced yet';
 
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <View style={styles.header}>
-        <Pressable onPress={() => router.back()} style={styles.backButton}>
-          <Ionicons name="chevron-back" size={20} color="#1d4ed8" />
-          <Text style={styles.backText}>Back</Text>
-        </Pressable>
-        <Text style={styles.title}>Settings</Text>
-        <View style={{ width: 50 }} />
-      </View>
+    <SafeAreaView style={styles.safeArea} edges={['top']}>
+      <TabHeader title="Shop" />
 
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
-        <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-          {/* Sync Card */}
-          <View style={styles.card}>
-            <View style={styles.cardHeader}>
-              <Text style={styles.cardTitle}>Cloud Synchronization</Text>
-              <View style={styles.statusPill}>
-                <View style={[styles.blueDot, syncInfo.status === 'offline' && styles.offlineDot]} />
-                <Text style={styles.statusText}>
-                  {syncing
-                    ? 'Syncing'
-                    : syncInfo.pending > 0
-                      ? `${syncInfo.pending} Pending`
-                      : syncInfo.status === 'offline'
-                        ? 'Offline'
-                        : 'Synced'}
+        <ScrollView
+          contentContainerStyle={[styles.container, { paddingBottom: bottomNavPadding }]}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={handleRefresh}
+              tintColor={theme.colors.brand}
+              colors={[theme.colors.brand]}
+            />
+          }
+        >
+          {/* Shop Card */}
+          <Card>
+            <View style={styles.shopHeader}>
+              <View style={styles.shopIcon}>
+                <MaterialCommunityIcons name="storefront-outline" size={22} color={theme.colors.brand} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.shopName} numberOfLines={1}>
+                  {session.shop.name}
+                </Text>
+                <Text style={styles.ownerName} numberOfLines={1}>
+                  {session.shop.owner_name ?? session.user.name}
                 </Text>
               </View>
-            </View>
-            <Text style={styles.cardDesc}>
-              {syncInfo.lastSyncAt
-                ? `Last synced: ${formatDate(syncInfo.lastSyncAt)}`
-                : 'Not synced yet. Tap Sync Now when connected to your server.'}
-            </Text>
-
-            <Pressable onPress={handleSync} disabled={syncing} style={[styles.syncBtn, syncing && styles.btnDisabled]}>
-              <Ionicons name="sync-outline" size={16} color="#ffffff" />
-              <Text style={styles.syncBtnText}>{syncing ? 'Syncing...' : 'Sync Now'}</Text>
-            </Pressable>
-          </View>
-
-          {/* Shop Details */}
-          <View style={styles.card}>
-            <View style={styles.cardHeader}>
-              <Text style={styles.cardTitle}>Shop Details</Text>
               <Pressable
                 onPress={() => {
                   if (!editingShop) {
@@ -181,90 +199,158 @@ export default function SettingsScreen() {
                   }
                   setEditingShop(!editingShop);
                 }}
+                hitSlop={8}
               >
                 <Text style={styles.editLink}>{editingShop ? 'Cancel' : 'Edit'}</Text>
               </Pressable>
             </View>
 
             {editingShop ? (
-              <View>
-                <Text style={styles.inputLabel}>Shop Name</Text>
-                <TextInput style={styles.input} value={shopName} onChangeText={setShopName} />
+              <View style={styles.editForm}>
+                <FormField label="Shop name" first>
+                  <FormInput value={shopName} onChangeText={setShopName} />
+                </FormField>
 
-                <Text style={styles.inputLabel}>Contact Number</Text>
-                <TextInput style={styles.input} value={shopContact} onChangeText={setShopContact} keyboardType="phone-pad" />
+                <FormField label="Phone">
+                  <FormInput
+                    value={shopContact}
+                    onChangeText={setShopContact}
+                    keyboardType="phone-pad"
+                  />
+                </FormField>
 
-                <Text style={styles.inputLabel}>Address</Text>
-                <TextInput style={styles.input} value={shopAddress} onChangeText={setShopAddress} />
+                <FormField label="Address">
+                  <FormInput value={shopAddress} onChangeText={setShopAddress} />
+                </FormField>
 
-                <Text style={styles.inputLabel}>Default Rush Fee (₱)</Text>
-                <TextInput style={styles.input} value={rushFee} onChangeText={setRushFee} keyboardType="decimal-pad" />
+                <FormField label="Rush fee (₱)">
+                  <FormInput
+                    value={rushFee}
+                    onChangeText={setRushFee}
+                    keyboardType="decimal-pad"
+                  />
+                </FormField>
 
-                <Pressable
+                <AppButton
+                  label={savingShop ? 'Saving...' : 'Save'}
                   onPress={handleSaveShop}
-                  disabled={savingShop}
-                  style={[styles.syncBtn, { marginTop: 12 }, savingShop && styles.btnDisabled]}
-                >
-                  <Text style={styles.syncBtnText}>{savingShop ? 'Saving...' : 'Save Shop Details'}</Text>
-                </Pressable>
+                  loading={savingShop}
+                  size="md"
+                  style={styles.saveBtnSpacing}
+                />
               </View>
             ) : (
-              <>
-                <View style={styles.row}>
-                  <Text style={styles.rowLabel}>Shop Name</Text>
-                  <Text style={styles.rowValue}>{session.shop.name}</Text>
-                </View>
-                <View style={styles.row}>
-                  <Text style={styles.rowLabel}>Owner</Text>
-                  <Text style={styles.rowValue}>{session.shop.owner_name ?? session.user.name}</Text>
-                </View>
-                <View style={styles.row}>
-                  <Text style={styles.rowLabel}>Contact</Text>
-                  <Text style={styles.rowValue}>{session.shop.contact_number || 'Not set'}</Text>
-                </View>
-                <View style={styles.row}>
-                  <Text style={styles.rowLabel}>Address</Text>
-                  <Text style={[styles.rowValue, { flex: 1, textAlign: 'right', marginLeft: 12 }]}>
-                    {session.shop.address || 'Not set'}
-                  </Text>
-                </View>
-                <View style={styles.row}>
-                  <Text style={styles.rowLabel}>Default Rush Fee</Text>
-                  <Text style={styles.rowValue}>{formatPHP(session.shop.rush_fee_centavos)}</Text>
-                </View>
-              </>
+              <View style={styles.infoList}>
+                <KeyValueRow divider label="Phone" value={session.shop.contact_number || '—'} />
+                <KeyValueRow divider multiline label="Address" value={session.shop.address || '—'} />
+                <KeyValueRow
+                  divider
+                  label="Default Rush Fee"
+                  value={formatPHP(session.shop.rush_fee_centavos)}
+                />
+              </View>
             )}
-          </View>
+          </Card>
 
-          {/* User Account */}
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>Account</Text>
-            <View style={styles.row}>
-              <Text style={styles.rowLabel}>Name</Text>
-              <Text style={styles.rowValue}>{session.user.name}</Text>
-            </View>
-            <View style={styles.row}>
-              <Text style={styles.rowLabel}>Email</Text>
-              <Text style={styles.rowValue}>{session.user.email}</Text>
-            </View>
-          </View>
-
-          {/* App Info */}
-          <View style={styles.card}>
-            <View style={styles.brandRow}>
-              <View style={styles.brandIconBox}>
-                <Ionicons name="water" size={20} color="#1d4ed8" />
+          {/* Manage Menu */}
+          <Card noPadding>
+            <Pressable
+              onPress={() => router.push('/services' as any)}
+              style={({ pressed }) => [styles.menuRow, pressed && styles.rowPressed]}
+            >
+              <View style={styles.menuLeft}>
+                <View style={styles.menuIcon}>
+                  <MaterialCommunityIcons name="tag-outline" size={18} color={theme.colors.brand} />
+                </View>
+                <Text style={styles.menuTitle}>Services & Prices</Text>
               </View>
-              <View>
-                <Text style={styles.appName}>Clean</Text>
-                <Text style={styles.appVer}>Version 0.1.0 • Offline-First</Text>
+              <MaterialCommunityIcons name="chevron-right" size={20} color={theme.colors.inkMuted} />
+            </Pressable>
+
+            <Pressable
+              onPress={() => router.push('/payments' as any)}
+              style={({ pressed }) => [styles.menuRow, styles.menuDivider, pressed && styles.rowPressed]}
+            >
+              <View style={styles.menuLeft}>
+                <View style={styles.menuIcon}>
+                  <MaterialCommunityIcons name="wallet-outline" size={18} color={theme.colors.brand} />
+                </View>
+                <Text style={styles.menuTitle}>Payments</Text>
+              </View>
+              <MaterialCommunityIcons name="chevron-right" size={20} color={theme.colors.inkMuted} />
+            </Pressable>
+
+            <Pressable
+              onPress={() => router.push('/reports' as any)}
+              style={({ pressed }) => [styles.menuRow, styles.menuDivider, pressed && styles.rowPressed]}
+            >
+              <View style={styles.menuLeft}>
+                <View style={styles.menuIcon}>
+                  <MaterialCommunityIcons name="chart-bar" size={18} color={theme.colors.brand} />
+                </View>
+                <Text style={styles.menuTitle}>Reports</Text>
+              </View>
+              <MaterialCommunityIcons name="chevron-right" size={20} color={theme.colors.inkMuted} />
+            </Pressable>
+          </Card>
+
+          {/* Sync Row */}
+          <Card style={styles.syncCard}>
+            <View style={styles.syncLeft}>
+              <View style={styles.menuIcon}>
+                <MaterialCommunityIcons
+                  name={syncInfo.status === 'offline' ? 'cloud-off-outline' : 'sync'}
+                  size={18}
+                  color={theme.colors.brand}
+                />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.menuTitle}>Sync</Text>
+                <Text style={styles.syncSub} numberOfLines={1}>
+                  {syncSubtitle}
+                </Text>
               </View>
             </View>
-          </View>
 
-          <Pressable onPress={handleLogout} style={styles.logoutBtn}>
-            <Text style={styles.logoutText}>Log Out</Text>
-          </Pressable>
+            <Pressable
+              onPress={handleSync}
+              disabled={syncing}
+              style={({ pressed }) => [
+                styles.syncPillBtn,
+                pressed && styles.btnPressed,
+                syncing && styles.btnDisabled,
+              ]}
+            >
+              {syncing ? (
+                <ActivityIndicator size="small" color={theme.colors.white} />
+              ) : (
+                <Text style={styles.syncPillText}>Sync now</Text>
+              )}
+            </Pressable>
+          </Card>
+
+          {/* Account */}
+          <Card noPadding>
+            <View style={styles.accountInfoRow}>
+              <Text style={styles.rowLabel}>Signed in</Text>
+              <Text style={styles.rowValue} numberOfLines={1}>
+                {session.user.email}
+              </Text>
+            </View>
+            <Pressable
+              onPress={handleLogout}
+              style={({ pressed }) => [styles.menuRow, styles.menuDivider, pressed && styles.rowPressed]}
+            >
+              <View style={styles.menuLeft}>
+                <View style={styles.menuIconDanger}>
+                  <MaterialCommunityIcons name="logout" size={18} color={theme.colors.danger} />
+                </View>
+                <Text style={styles.logoutText}>Log Out</Text>
+              </View>
+            </Pressable>
+          </Card>
+
+          <Text style={styles.footerVersion}>Clean · v0.1.0</Text>
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -272,76 +358,158 @@ export default function SettingsScreen() {
 }
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: '#f8fafc' },
-  header: {
+  safeArea: {
+    flex: 1,
+    backgroundColor: theme.colors.bg,
+  },
+  container: {
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: theme.spacing.xs,
+  },
+  shopHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  shopIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: theme.colors.brandSoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  shopName: {
+    color: theme.colors.ink,
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  ownerName: {
+    color: theme.colors.inkMuted,
+    fontSize: 12,
+    marginTop: 2,
+  },
+  editLink: {
+    color: theme.colors.brand,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  infoList: {
+    marginTop: theme.spacing.md,
+  },
+  editForm: {
+    marginTop: theme.spacing.md,
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.divider,
+    paddingTop: theme.spacing.md,
+  },
+  saveBtnSpacing: {
+    marginTop: theme.spacing.lg,
+  },
+  rowLabel: {
+    color: theme.colors.inkMuted,
+    fontSize: 13,
+  },
+  rowValue: {
+    color: theme.colors.ink,
+    fontSize: 13,
+    fontWeight: '600',
+    flexShrink: 1,
+  },
+  menuRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 18,
-    paddingVertical: 14,
-    backgroundColor: '#ffffff',
-    borderBottomWidth: 1,
-    borderBottomColor: '#e2e8f0',
+    paddingHorizontal: theme.spacing.lg,
+    paddingVertical: 13,
   },
-  backButton: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  backText: { color: '#1d4ed8', fontSize: 14, fontWeight: '600' },
-  title: { color: '#0f172a', fontSize: 17, fontWeight: '700' },
-  container: { padding: 18, paddingBottom: 40 },
-  card: { backgroundColor: '#ffffff', borderRadius: 12, padding: 16, marginBottom: 12, borderWidth: 1, borderColor: '#e2e8f0' },
-  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },
-  cardTitle: { color: '#0f172a', fontSize: 13, fontWeight: '600' },
-  editLink: { color: '#1d4ed8', fontSize: 12, fontWeight: '600' },
-  cardDesc: { color: '#64748b', fontSize: 12, marginBottom: 12 },
-  statusPill: { flexDirection: 'row', alignItems: 'center', gap: 5 },
-  blueDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#1d4ed8' },
-  offlineDot: { backgroundColor: '#94a3b8' },
-  statusText: { color: '#1d4ed8', fontSize: 12, fontWeight: '600' },
-  syncBtn: {
-    backgroundColor: '#1d4ed8',
-    borderRadius: 8,
-    paddingVertical: 10,
+  menuDivider: {
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.divider,
+  },
+  rowPressed: {
+    backgroundColor: theme.colors.surfaceWarm,
+  },
+  menuLeft: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
+    gap: 12,
   },
-  btnDisabled: { opacity: 0.6 },
-  syncBtnText: { color: '#ffffff', fontSize: 13, fontWeight: '600' },
-  inputLabel: { color: '#64748b', fontSize: 12, fontWeight: '500', marginBottom: 4, marginTop: 8 },
-  input: {
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
+  menuIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: theme.colors.brandSoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  menuIconDanger: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: theme.colors.dangerBg,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  menuTitle: {
+    color: theme.colors.ink,
     fontSize: 14,
-    backgroundColor: '#f8fafc',
-    color: '#0f172a',
+    fontWeight: '600',
   },
-  row: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 8, borderTopWidth: 1, borderTopColor: '#f8fafc' },
-  rowLabel: { color: '#64748b', fontSize: 13 },
-  rowValue: { color: '#0f172a', fontSize: 13, fontWeight: '500' },
-  brandRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  brandIconBox: {
-    width: 40,
-    height: 40,
-    borderRadius: 10,
-    backgroundColor: '#eff6ff',
-    borderWidth: 1,
-    borderColor: '#dbeafe',
+  syncCard: {
+    paddingVertical: 13,
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
   },
-  appName: { color: '#0f172a', fontSize: 15, fontWeight: '700' },
-  appVer: { color: '#64748b', fontSize: 12 },
-  logoutBtn: {
-    backgroundColor: '#ffffff',
-    borderWidth: 1,
-    borderColor: '#fecaca',
-    borderRadius: 8,
-    paddingVertical: 12,
+  syncLeft: {
+    flexDirection: 'row',
     alignItems: 'center',
-    marginTop: 10,
+    gap: 12,
+    flex: 1,
   },
-  logoutText: { color: '#dc2626', fontSize: 14, fontWeight: '600' },
+  syncSub: {
+    color: theme.colors.inkMuted,
+    fontSize: 12,
+    marginTop: 1,
+  },
+  syncPillBtn: {
+    backgroundColor: theme.colors.brand,
+    borderRadius: theme.radius.pill,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    minWidth: 82,
+    alignItems: 'center',
+  },
+  btnPressed: {
+    backgroundColor: theme.colors.brandDark,
+  },
+  btnDisabled: {
+    opacity: theme.layout.disabledOpacity,
+  },
+  syncPillText: {
+    color: theme.colors.white,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  accountInfoRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: theme.spacing.lg,
+    paddingVertical: 13,
+    gap: 12,
+  },
+  logoutText: {
+    color: theme.colors.danger,
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  footerVersion: {
+    color: theme.colors.inkMuted,
+    fontSize: 11,
+    textAlign: 'center',
+    marginTop: theme.spacing.sm,
+  },
 });

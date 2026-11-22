@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useFocusEffect } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useAuthSession } from '@/context/AuthContext';
 import { initDatabase } from '@/db/client';
 import {
@@ -18,18 +18,23 @@ import {
 import { displayMethod } from '@/db/repositories/payments';
 import { formatPHP } from '@/utils/money';
 import { LoadingState } from '@/components/Feedback';
+import { ScreenHeader } from '@/components/ScreenHeader';
+import { Card, SectionHeader, SegmentedControl, useScreenBottomPadding } from '@/components/ui';
+import { theme } from '@/theme';
 
 const ranges: { key: DateRangeKey; label: string }[] = [
   { key: 'today', label: 'Today' },
   { key: '7days', label: '7 Days' },
   { key: 'month', label: 'Month' },
-  { key: 'all', label: 'All Time' },
+  { key: 'all', label: 'All' },
 ];
 
 export default function ReportsScreen() {
   const session = useAuthSession();
+  const bottomPadding = useScreenBottomPadding();
   const [rangeKey, setRangeKey] = useState<DateRangeKey>('today');
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [summary, setSummary] = useState<ReportSummary>({
     collections: 0,
     orderValue: 0,
@@ -78,96 +83,123 @@ export default function ReportsScreen() {
     void load();
   }, [load]);
 
+  const handleRefresh = async () => {
+    if (!session || refreshing) return;
+    setRefreshing(true);
+    try {
+      await load();
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
   const maxTrendVal = Math.max(1, ...trends.map((t) => t.collections));
 
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <ScrollView contentContainerStyle={styles.container} showsVerticalScrollIndicator={false}>
-        <View style={styles.header}>
-          <Pressable onPress={() => router.back()} style={styles.backButton}>
-            <Ionicons name="chevron-back" size={20} color="#1d4ed8" />
-            <Text style={styles.backText}>Back</Text>
-          </Pressable>
-          <Text style={styles.title}>Reports</Text>
-          <View style={{ width: 50 }} />
-        </View>
+    <SafeAreaView style={styles.safeArea} edges={['top']}>
+      <ScreenHeader title="Reports" />
 
-        <View style={styles.rangeRow}>
-          {ranges.map((r) => {
-            const active = rangeKey === r.key;
-            return (
-              <Pressable
-                key={r.key}
-                onPress={() => setRangeKey(r.key)}
-                style={[styles.rangeChip, active && styles.rangeChipActive]}
-              >
-                <Text style={[styles.rangeText, active && styles.rangeTextActive]}>{r.label}</Text>
-              </Pressable>
-            );
-          })}
-        </View>
+      <ScrollView
+        contentContainerStyle={[styles.container, { paddingBottom: bottomPadding }]}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={handleRefresh}
+            tintColor={theme.colors.brand}
+            colors={[theme.colors.brand]}
+          />
+        }
+      >
+        <SegmentedControl
+          options={ranges}
+          value={rangeKey}
+          onChange={setRangeKey}
+          style={styles.rangeControl}
+        />
 
         {loading ? (
-          <LoadingState message="Calculating reports..." />
+          <LoadingState />
         ) : (
           <>
-            {/* Overview Numbers */}
+            {/* 2x2 Summary */}
             <View style={styles.metricsRow}>
               <View style={styles.metricCard}>
-                <Text style={styles.metricCaption}>Collections</Text>
+                <Text style={styles.metricCaption}>Collected</Text>
                 <Text style={styles.metricValue}>{formatPHP(summary.collections)}</Text>
               </View>
               <View style={styles.metricCard}>
-                <Text style={styles.metricCaption}>Order Value</Text>
+                <Text style={styles.metricCaption}>Sales</Text>
                 <Text style={styles.metricValue}>{formatPHP(summary.orderValue)}</Text>
               </View>
             </View>
 
             <View style={styles.metricsRow}>
               <View style={styles.metricCard}>
-                <Text style={styles.metricCaption}>Orders ({rangeKey})</Text>
+                <Text style={styles.metricCaption}>Orders</Text>
                 <Text style={styles.metricValue}>{summary.totalOrders}</Text>
               </View>
               <View style={styles.metricCard}>
-                <Text style={styles.metricCaption}>Avg. Order Value</Text>
+                <Text style={styles.metricCaption}>Avg. Order</Text>
                 <Text style={styles.metricValue}>{formatPHP(summary.averageOrderValue)}</Text>
               </View>
             </View>
 
-            <View style={styles.fullCard}>
-              <Text style={styles.metricCaption}>Total Shop Outstanding Balance</Text>
-              <Text style={[styles.metricValue, { color: '#1d4ed8' }]}>{formatPHP(summary.outstandingBalance)}</Text>
-            </View>
+            {/* Unpaid Highlight */}
+            <Pressable
+              onPress={() => router.push('/payments' as any)}
+              style={({ pressed }) => [styles.unpaidCard, pressed && styles.pressed]}
+            >
+              <View>
+                <Text style={styles.metricCaption}>Unpaid Balance</Text>
+                <Text
+                  style={[
+                    styles.metricValue,
+                    summary.outstandingBalance > 0 && { color: theme.colors.danger },
+                  ]}
+                >
+                  {formatPHP(summary.outstandingBalance)}
+                </Text>
+              </View>
+              <MaterialCommunityIcons name="chevron-right" size={20} color={theme.colors.inkMuted} />
+            </Pressable>
 
-            {/* Daily Collections Trend */}
+            {/* Daily Collections */}
             {trends.length > 0 ? (
-              <View style={styles.card}>
-                <Text style={styles.cardTitle}>Daily Collections Trend</Text>
+              <Card>
+                <SectionHeader title="Daily Collections" />
                 {trends.map((t) => {
                   const pct = Math.round((t.collections / maxTrendVal) * 100);
                   return (
                     <View key={t.date} style={styles.trendRow}>
                       <Text style={styles.trendDate}>{t.date.slice(5)}</Text>
                       <View style={styles.barTrack}>
-                        <View style={[styles.barFill, { width: `${Math.max(pct, t.collections > 0 ? 4 : 0)}%` }]} />
+                        <View
+                          style={[
+                            styles.barFill,
+                            { width: `${Math.max(pct, t.collections > 0 ? 4 : 0)}%` },
+                          ]}
+                        />
                       </View>
                       <Text style={styles.trendVal}>{formatPHP(t.collections)}</Text>
                     </View>
                   );
                 })}
-              </View>
+              </Card>
             ) : null}
 
             {/* Top Services */}
-            <View style={styles.card}>
-              <Text style={styles.cardTitle}>Top Services</Text>
+            <Card>
+              <SectionHeader title="Top Services" />
               {topServices.length === 0 ? (
-                <Text style={styles.emptyCardText}>No orders recorded in this period.</Text>
+                <Text style={styles.emptyCardText}>No data yet</Text>
               ) : (
                 topServices.map((s, idx) => (
-                  <View key={idx} style={styles.serviceRow}>
-                    <View>
-                      <Text style={styles.serviceName}>{s.service_name}</Text>
+                  <View key={idx} style={[styles.serviceRow, idx > 0 && styles.rowDivider]}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.serviceName} numberOfLines={1}>
+                        {s.service_name}
+                      </Text>
                       <Text style={styles.serviceMeta}>
                         {s.order_count} {s.order_count === 1 ? 'order' : 'orders'}
                       </Text>
@@ -176,18 +208,20 @@ export default function ReportsScreen() {
                   </View>
                 ))
               )}
-            </View>
+            </Card>
 
             {/* Top Customers */}
-            <View style={styles.card}>
-              <Text style={styles.cardTitle}>Top Customers</Text>
+            <Card>
+              <SectionHeader title="Top Customers" />
               {topCustomers.length === 0 ? (
-                <Text style={styles.emptyCardText}>No customer activity in this period.</Text>
+                <Text style={styles.emptyCardText}>No data yet</Text>
               ) : (
-                topCustomers.map((c) => (
-                  <View key={c.customer_id} style={styles.serviceRow}>
-                    <View>
-                      <Text style={styles.serviceName}>{c.customer_name || 'Customer'}</Text>
+                topCustomers.map((c, idx) => (
+                  <View key={c.customer_id} style={[styles.serviceRow, idx > 0 && styles.rowDivider]}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.serviceName} numberOfLines={1}>
+                        {c.customer_name || 'Customer'}
+                      </Text>
                       <Text style={styles.serviceMeta}>
                         {c.order_count} {c.order_count === 1 ? 'order' : 'orders'}
                       </Text>
@@ -196,32 +230,32 @@ export default function ReportsScreen() {
                   </View>
                 ))
               )}
-            </View>
+            </Card>
 
             {/* Payment Methods */}
-            <View style={styles.card}>
-              <Text style={styles.cardTitle}>Payment Methods</Text>
+            <Card>
+              <SectionHeader title="Payment Methods" />
               {methods.length === 0 ? (
-                <Text style={styles.emptyCardText}>No payment transactions recorded in this period.</Text>
+                <Text style={styles.emptyCardText}>No data yet</Text>
               ) : (
                 methods.map((item, idx) => {
                   const pct = summary.collections > 0 ? Math.round((item.total / summary.collections) * 100) : 0;
                   return (
-                    <View key={idx} style={styles.serviceRow}>
-                      <View>
+                    <View key={idx} style={[styles.methodBlock, idx > 0 && styles.rowDivider]}>
+                      <View style={styles.methodHeader}>
                         <Text style={styles.serviceName}>{displayMethod(item.method)}</Text>
-                        <Text style={styles.serviceMeta}>
-                          {item.count} {item.count === 1 ? 'payment' : 'payments'}
+                        <Text style={styles.serviceRev}>
+                          {formatPHP(item.total)} · {pct}%
                         </Text>
                       </View>
-                      <Text style={styles.serviceRev}>
-                        {formatPHP(item.total)} ({pct}%)
-                      </Text>
+                      <View style={styles.methodTrack}>
+                        <View style={[styles.methodFill, { width: `${Math.max(pct, item.total > 0 ? 4 : 0)}%` }]} />
+                      </View>
                     </View>
                   );
                 })
               )}
-            </View>
+            </Card>
           </>
         )}
       </ScrollView>
@@ -230,61 +264,140 @@ export default function ReportsScreen() {
 }
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: '#f8fafc' },
-  container: { padding: 18, paddingBottom: 40 },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 },
-  backButton: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  backText: { color: '#1d4ed8', fontSize: 14, fontWeight: '600' },
-  title: { color: '#0f172a', fontSize: 17, fontWeight: '700' },
-  rangeRow: { flexDirection: 'row', gap: 8, marginBottom: 14 },
-  rangeChip: {
+  safeArea: {
     flex: 1,
-    backgroundColor: '#ffffff',
-    borderRadius: 8,
-    paddingVertical: 7,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
+    backgroundColor: theme.colors.bg,
   },
-  rangeChipActive: { backgroundColor: '#1d4ed8', borderColor: '#1d4ed8' },
-  rangeText: { color: '#64748b', fontSize: 12, fontWeight: '500' },
-  rangeTextActive: { color: '#ffffff', fontWeight: '600' },
-  metricsRow: { flexDirection: 'row', gap: 10, marginBottom: 10 },
+  container: {
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: theme.spacing.xs,
+  },
+  rangeControl: {
+    marginBottom: theme.spacing.md,
+  },
+  metricsRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 10,
+  },
   metricCard: {
     flex: 1,
-    backgroundColor: '#ffffff',
-    borderRadius: 10,
-    padding: 14,
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.lg,
+    padding: theme.spacing.lg,
     borderWidth: 1,
-    borderColor: '#e2e8f0',
+    borderColor: theme.colors.border,
+    ...theme.shadow.card,
   },
-  fullCard: {
-    backgroundColor: '#ffffff',
-    borderRadius: 10,
-    padding: 14,
-    marginBottom: 14,
+  unpaidCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.lg,
+    padding: theme.spacing.lg,
+    marginBottom: theme.spacing.md,
     borderWidth: 1,
-    borderColor: '#e2e8f0',
+    borderColor: theme.colors.border,
+    ...theme.shadow.card,
   },
-  metricCaption: { color: '#64748b', fontSize: 12, fontWeight: '500' },
-  metricValue: { color: '#0f172a', fontSize: 17, fontWeight: '700', marginTop: 4 },
-  card: { backgroundColor: '#ffffff', borderRadius: 10, padding: 16, marginBottom: 12, borderWidth: 1, borderColor: '#e2e8f0' },
-  cardTitle: { color: '#0f172a', fontSize: 14, fontWeight: '600', marginBottom: 12 },
-  trendRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 },
-  trendDate: { color: '#64748b', fontSize: 11, width: 42 },
-  barTrack: { flex: 1, height: 10, backgroundColor: '#f1f5f9', borderRadius: 5, overflow: 'hidden' },
-  barFill: { height: '100%', backgroundColor: '#1d4ed8', borderRadius: 5 },
-  trendVal: { color: '#0f172a', fontSize: 11, fontWeight: '600', width: 72, textAlign: 'right' },
+  pressed: {
+    opacity: theme.layout.pressedOpacity,
+  },
+  metricCaption: {
+    color: theme.colors.inkMuted,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  metricValue: {
+    color: theme.colors.ink,
+    fontSize: 18,
+    fontWeight: '800',
+    marginTop: 4,
+    fontVariant: ['tabular-nums'],
+  },
+  trendRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 8,
+  },
+  trendDate: {
+    color: theme.colors.inkMuted,
+    fontSize: 11,
+    width: 40,
+    fontVariant: ['tabular-nums'],
+  },
+  barTrack: {
+    flex: 1,
+    height: 9,
+    backgroundColor: theme.colors.surfaceAlt,
+    borderRadius: 5,
+    overflow: 'hidden',
+  },
+  barFill: {
+    height: '100%',
+    backgroundColor: theme.colors.brand,
+    borderRadius: 5,
+  },
+  trendVal: {
+    color: theme.colors.ink,
+    fontSize: 11,
+    fontWeight: '700',
+    width: 72,
+    textAlign: 'right',
+    fontVariant: ['tabular-nums'],
+  },
   serviceRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingVertical: 8,
-    borderTopWidth: 1,
-    borderTopColor: '#f8fafc',
+    paddingVertical: 9,
+    gap: 8,
   },
-  serviceName: { color: '#0f172a', fontSize: 13, fontWeight: '600' },
-  serviceMeta: { color: '#64748b', fontSize: 11, marginTop: 2 },
-  serviceRev: { color: '#1d4ed8', fontSize: 13, fontWeight: '700' },
-  emptyCardText: { color: '#94a3b8', fontSize: 13, paddingVertical: 8 },
+  rowDivider: {
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.divider,
+  },
+  serviceName: {
+    color: theme.colors.ink,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  serviceMeta: {
+    color: theme.colors.inkMuted,
+    fontSize: 11,
+    marginTop: 2,
+  },
+  serviceRev: {
+    color: theme.colors.brand,
+    fontSize: 13,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+  },
+  methodBlock: {
+    paddingVertical: 10,
+  },
+  methodHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  methodTrack: {
+    height: 6,
+    backgroundColor: theme.colors.surfaceAlt,
+    borderRadius: 3,
+    overflow: 'hidden',
+  },
+  methodFill: {
+    height: '100%',
+    backgroundColor: theme.colors.brand,
+    borderRadius: 3,
+  },
+  emptyCardText: {
+    color: theme.colors.inkMuted,
+    fontSize: 13,
+    paddingVertical: 6,
+  },
 });

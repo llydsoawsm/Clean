@@ -25,8 +25,8 @@ export function readyAgingLabel(readyAt: string | null): string {
   const d = daysSince(readyAt);
   if (d == null) return '';
   if (d <= 0) return 'Ready today';
-  if (d === 1) return 'Ready for 1 day';
-  return `Ready for ${d} days`;
+  if (d === 1) return '1d ready';
+  return `${d}d waiting`;
 }
 
 export function isLongWaiting(readyAt: string | null): boolean {
@@ -45,4 +45,30 @@ export function formatDate(iso: string | null, opts?: { withTime?: boolean }): s
   } catch {
     return iso;
   }
+}
+
+export function formatShortDate(iso: string | null): string {
+  if (!iso) return '-';
+  try {
+    const d = new Date(iso);
+    const now = new Date();
+    const isSameDay =
+      d.getFullYear() === now.getFullYear() &&
+      d.getMonth() === now.getMonth() &&
+      d.getDate() === now.getDate();
+    const time = d.toLocaleTimeString('en-PH', { hour: 'numeric', minute: '2-digit' });
+    if (isSameDay) return `Today, ${time}`;
+    const day = d.toLocaleDateString('en-PH', { month: 'short', day: 'numeric' });
+    return `${day}, ${time}`;
+  } catch {
+    return iso;
+  }
+}
+
+export function formatTodayHeader(): string {
+  return new Date().toLocaleDateString('en-PH', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+  });
 }

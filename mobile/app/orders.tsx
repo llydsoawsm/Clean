@@ -1,36 +1,50 @@
 import { useCallback, useEffect, useState } from 'react';
-import { FlatList, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { FlatList, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
 import { useAuthSession } from '@/context/AuthContext';
 import { initDatabase } from '@/db/client';
 import { getOrderCounts, listOrders } from '@/db/repositories/orders';
+import { runSync } from '@/sync/engine';
 import type { OrderRow, OrderStatus } from '@/db/types';
-import { formatPHP } from '@/utils/money';
+import { formatPHP, formatWeight } from '@/utils/money';
 import { isLongWaiting, readyAgingLabel } from '@/utils/dates';
-import { LoadingState } from '@/components/Feedback';
+import { EmptyState, LoadingState } from '@/components/Feedback';
+import { TabHeader } from '@/components/ScreenHeader';
+import { useBottomNavPadding } from '@/components/BottomTabBar';
+import { RushBadge, StatusBadge } from '@/components/StatusBadge';
+import { FilterChip, HeaderIconButton, SearchBar } from '@/components/ui';
+import { ORDER_STATUS_META, shortTicket, theme } from '@/theme';
 
 type Filter = 'ALL' | OrderStatus;
 
 const filters: { key: Filter; label: string }[] = [
   { key: 'ALL', label: 'All' },
-  { key: 'RECEIVED', label: 'Received' },
+  { key: 'RECEIVED', label: 'Drop-off' },
   { key: 'PROCESSING', label: 'Washing' },
   { key: 'READY', label: 'Ready' },
-  { key: 'COMPLETED', label: 'Done' },
+  { key: 'COMPLETED', label: 'Claimed' },
 ];
+
+function parseFilterParam(param?: string): Filter {
+  if (param && ['RECEIVED', 'PROCESSING', 'READY', 'COMPLETED'].includes(param.toUpperCase())) {
+    return param.toUpperCase() as OrderStatus;
+  }
+  return 'ALL';
+}
+
+function orderUnitSummary(item: OrderRow): string {
+  if (item.pricing_type_snapshot === 'per_piece') return `${item.quantity ?? 0} pc`;
+  if (item.pricing_type_snapshot === 'fixed') return 'Fixed';
+  return formatWeight(item.weight_grams);
+}
 
 export default function OrdersScreen() {
   const session = useAuthSession();
+  const bottomNavPadding = useBottomNavPadding();
   const { status: initialStatus } = useLocalSearchParams<{ status?: string }>();
-  const normalizedInitial: Filter =
-    initialStatus && ['RECEIVED', 'PROCESSING', 'READY', 'COMPLETED'].includes(initialStatus.toUpperCase())
-      ? (initialStatus.toUpperCase() as OrderStatus)
-      : 'ALL';
-
   const [search, setSearch] = useState('');
-  const [filter, setFilter] = useState<Filter>(normalizedInitial);
+  const [filter, setFilter] = useState<Filter>(() => parseFilterParam(initialStatus));
   const [orders, setOrders] = useState<OrderRow[]>([]);
   const [counts, setCounts] = useState<Record<string, number>>({
     ALL: 0,
@@ -40,6 +54,11 @@ export default function OrdersScreen() {
     COMPLETED: 0,
   });
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+
+  useEffect(() => {
+    setFilter(parseFilterParam(initialStatus));
+  }, [initialStatus]);
 
   const load = useCallback(async () => {
     if (!session) return;
@@ -73,109 +92,131 @@ export default function OrdersScreen() {
     void load();
   }, [load]);
 
-  return (
-    <SafeAreaView style={styles.safeArea}>
-      <View style={styles.header}>
-        <Pressable onPress={() => router.back()} style={styles.backButton}>
-          <Ionicons name="chevron-back" size={20} color="#1d4ed8" />
-          <Text style={styles.backText}>Back</Text>
-        </Pressable>
-        <Text style={styles.title}>Orders ({counts.ALL ?? 0})</Text>
-        <Pressable onPress={() => router.push('/receive' as any)} style={styles.addBtn}>
-          <Ionicons name="add" size={22} color="#1d4ed8" />
-        </Pressable>
-      </View>
+  const handleRefresh = async () => {
+    if (!session || refreshing) return;
+    setRefreshing(true);
+    try {
+      await runSync(session.shop.id, session.token).catch(() => {});
+      await load();
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
-      <View style={styles.searchBox}>
-        <TextInput
-          placeholder="Search order #, customer, or phone"
-          placeholderTextColor="#94a3b8"
+  return (
+    <SafeAreaView style={styles.safeArea} edges={['top']}>
+      <TabHeader
+        title="Orders"
+        count={counts.ALL ?? 0}
+        right={
+          <HeaderIconButton
+            icon="plus"
+            onPress={() => router.push('/receive' as any)}
+            accessibilityLabel="New drop-off"
+          />
+        }
+      />
+
+      <View style={styles.searchWrap}>
+        <SearchBar
           value={search}
           onChangeText={setSearch}
-          style={styles.searchInput}
+          placeholder="Search name, phone, or #"
+          surface="card"
         />
       </View>
 
       <View style={styles.filterContainer}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
           {filters.map((f) => {
-            const active = filter === f.key;
             const count = counts[f.key] ?? 0;
+            const label = count > 0 && f.key !== 'ALL' ? `${f.label} · ${count}` : f.label;
             return (
-              <Pressable key={f.key} onPress={() => setFilter(f.key)} style={[styles.chip, active && styles.chipActive]}>
-                <Text style={[styles.chipText, active && styles.chipTextActive]}>
-                  {f.label} ({count})
-                </Text>
-              </Pressable>
+              <FilterChip
+                key={f.key}
+                label={label}
+                active={filter === f.key}
+                onPress={() => setFilter(f.key)}
+              />
             );
           })}
         </ScrollView>
       </View>
 
       {loading ? (
-        <LoadingState message="Loading orders..." />
+        <LoadingState />
       ) : (
         <FlatList
           data={orders}
           keyExtractor={(item) => item.id}
-          contentContainerStyle={styles.listContent}
+          contentContainerStyle={[styles.listContent, { paddingBottom: bottomNavPadding }]}
           showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={handleRefresh}
+              tintColor={theme.colors.brand}
+              colors={[theme.colors.brand]}
+            />
+          }
           ListEmptyComponent={
-            <View style={styles.emptyContainer}>
-              <Text style={styles.emptyTitle}>No Orders Found</Text>
-              <Text style={styles.emptySubtitle}>
-                {search.trim() || filter !== 'ALL'
-                  ? 'No orders match the current filter.'
-                  : 'There are currently no laundry orders recorded. Tap + to receive a new order.'}
-              </Text>
-            </View>
+            <EmptyState
+              icon="basket-outline"
+              title="No orders"
+              hint={search.trim() || filter !== 'ALL' ? 'Try another filter' : 'Tap + for a new drop-off'}
+              actionLabel={!search.trim() && filter === 'ALL' ? 'New Drop-off' : undefined}
+              onAction={!search.trim() && filter === 'ALL' ? () => router.push('/receive' as any) : undefined}
+            />
           }
           renderItem={({ item }) => {
+            const meta = ORDER_STATUS_META[item.status];
             const longWaiting = item.status === 'READY' && isLongWaiting(item.ready_at);
             const agingText = item.status === 'READY' ? readyAgingLabel(item.ready_at) : '';
             return (
               <Pressable
                 onPress={() => router.push({ pathname: '/order-detail' as any, params: { id: item.id } })}
-                style={({ pressed }) => [styles.card, longWaiting && styles.cardWaiting, pressed && styles.cardPressed]}
+                style={({ pressed }) => [
+                  styles.card,
+                  longWaiting && styles.cardWaiting,
+                  pressed && styles.pressed,
+                ]}
               >
-                <View style={styles.cardHeader}>
-                  <Text style={styles.orderNumber}>{item.order_number}</Text>
-                  <View
-                    style={[
-                      styles.badge,
-                      item.status === 'READY'
-                        ? styles.badgeReady
-                        : item.status === 'PROCESSING'
-                          ? styles.badgeProcessing
-                          : item.status === 'RECEIVED'
-                            ? styles.badgeReceived
-                            : styles.badgeCompleted,
-                    ]}
-                  >
-                    <Text
-                      style={[
-                        styles.badgeText,
-                        item.status === 'READY' && styles.badgeTextReady,
-                        item.status === 'PROCESSING' && styles.badgeTextProcessing,
-                        item.status === 'RECEIVED' && styles.badgeTextReceived,
-                      ]}
-                    >
-                      {item.status}
+                <View style={[styles.accentBar, { backgroundColor: meta.color }]} />
+                <View style={styles.cardBody}>
+                  <View style={styles.cardTop}>
+                    <Text style={styles.customer} numberOfLines={1}>
+                      {item.customer_name_snapshot ?? 'Customer'}
                     </Text>
+                    <View style={styles.badges}>
+                      {item.is_rush === 1 ? <RushBadge /> : null}
+                      <StatusBadge type="order" value={item.status} />
+                    </View>
                   </View>
-                </View>
 
-                <Text style={styles.customer}>{item.customer_name_snapshot ?? 'Customer'}</Text>
-                <Text style={styles.service}>{item.service_name_snapshot}</Text>
-                {agingText ? (
-                  <Text style={[styles.agingText, longWaiting && styles.agingTextUrgent]}>{agingText}</Text>
-                ) : null}
-
-                <View style={styles.footerRow}>
-                  <Text style={styles.price}>{formatPHP(item.total_centavos)}</Text>
-                  <Text style={styles.balance}>
-                    {item.balance_centavos > 0 ? `Bal: ${formatPHP(item.balance_centavos)}` : 'Paid'}
+                  <Text style={styles.subLine} numberOfLines={1}>
+                    {item.service_name_snapshot} · {orderUnitSummary(item)} · {shortTicket(item.order_number)}
                   </Text>
+
+                  <View style={styles.cardFooter}>
+                    <Text style={styles.price}>{formatPHP(item.total_centavos)}</Text>
+                    <View style={styles.footerRight}>
+                      {agingText ? (
+                        <View style={[styles.agingPill, longWaiting && styles.agingPillUrgent]}>
+                          <Text style={[styles.agingText, longWaiting && styles.agingTextUrgent]}>
+                            {agingText}
+                          </Text>
+                        </View>
+                      ) : null}
+                      <Text
+                        style={[
+                          styles.balance,
+                          item.balance_centavos > 0 ? styles.balanceUnpaid : styles.balancePaid,
+                        ]}
+                      >
+                        {item.balance_centavos > 0 ? `Unpaid ${formatPHP(item.balance_centavos)}` : 'Paid'}
+                      </Text>
+                    </View>
+                  </View>
                 </View>
               </Pressable>
             );
@@ -187,87 +228,120 @@ export default function OrdersScreen() {
 }
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: '#f8fafc' },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 18,
-    paddingVertical: 14,
-    backgroundColor: '#ffffff',
-    borderBottomWidth: 1,
-    borderBottomColor: '#e2e8f0',
+  safeArea: {
+    flex: 1,
+    backgroundColor: theme.colors.bg,
   },
-  backButton: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  backText: { color: '#1d4ed8', fontSize: 14, fontWeight: '600' },
-  title: { color: '#0f172a', fontSize: 17, fontWeight: '700' },
-  addBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
-  searchBox: { backgroundColor: '#ffffff', paddingHorizontal: 18, paddingBottom: 10 },
-  searchInput: {
-    backgroundColor: '#f8fafc',
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    fontSize: 14,
-    color: '#0f172a',
+  pressed: {
+    opacity: theme.layout.pressedOpacity,
+  },
+  searchWrap: {
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: theme.spacing.xs,
+    paddingBottom: theme.spacing.sm,
   },
   filterContainer: {
-    backgroundColor: '#ffffff',
-    borderBottomWidth: 1,
-    borderBottomColor: '#f1f5f9',
+    marginBottom: theme.spacing.xs,
   },
-  filterRow: { flexDirection: 'row', gap: 8, paddingHorizontal: 18, paddingVertical: 10 },
-  chip: {
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    backgroundColor: '#ffffff',
+  filterRow: {
+    flexDirection: 'row',
+    gap: 8,
+    paddingHorizontal: theme.spacing.lg,
+    paddingVertical: 4,
   },
-  chipActive: { backgroundColor: '#1d4ed8', borderColor: '#1d4ed8' },
-  chipText: { color: '#64748b', fontSize: 12, fontWeight: '500' },
-  chipTextActive: { color: '#ffffff', fontWeight: '600' },
-  listContent: { padding: 18, paddingBottom: 40 },
+  listContent: {
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: theme.spacing.sm,
+  },
   card: {
-    backgroundColor: '#ffffff',
-    borderRadius: 10,
-    padding: 14,
-    marginBottom: 10,
+    flexDirection: 'row',
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.lg,
+    marginBottom: theme.layout.listGap,
     borderWidth: 1,
-    borderColor: '#e2e8f0',
+    borderColor: theme.colors.border,
+    overflow: 'hidden',
+    ...theme.shadow.card,
   },
-  cardWaiting: { borderColor: '#fb923c', backgroundColor: '#fff7ed' },
-  cardPressed: { opacity: 0.7 },
-  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  orderNumber: { color: '#0f172a', fontSize: 14, fontWeight: '700' },
-  badge: { borderRadius: 6, paddingHorizontal: 8, paddingVertical: 3, backgroundColor: '#f1f5f9' },
-  badgeReceived: { backgroundColor: '#eff6ff' },
-  badgeProcessing: { backgroundColor: '#dbeafe' },
-  badgeReady: { backgroundColor: '#1d4ed8' },
-  badgeCompleted: { backgroundColor: '#f1f5f9' },
-  badgeText: { fontSize: 11, fontWeight: '600', color: '#475569' },
-  badgeTextReceived: { color: '#1d4ed8' },
-  badgeTextProcessing: { color: '#1e40af' },
-  badgeTextReady: { color: '#ffffff' },
-  customer: { color: '#0f172a', fontSize: 14, fontWeight: '600', marginTop: 4 },
-  service: { color: '#64748b', fontSize: 12, marginTop: 2 },
-  agingText: { color: '#1d4ed8', fontSize: 11, fontWeight: '600', marginTop: 4 },
-  agingTextUrgent: { color: '#c2410c' },
-  footerRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: '#f8fafc' },
-  price: { color: '#0f172a', fontWeight: '700', fontSize: 13 },
-  balance: { color: '#1d4ed8', fontSize: 12, fontWeight: '600' },
-  emptyContainer: {
-    padding: 32,
+  cardWaiting: {
+    borderColor: theme.colors.readyBorder,
+    backgroundColor: theme.colors.readySurface,
+  },
+  accentBar: {
+    width: 4,
+  },
+  cardBody: {
+    flex: 1,
+    padding: theme.layout.listCardPadding,
+  },
+  cardTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
     alignItems: 'center',
-    backgroundColor: '#ffffff',
-    borderRadius: 12,
-    marginTop: 20,
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
+    gap: 8,
   },
-  emptyTitle: { color: '#0f172a', fontSize: 15, fontWeight: '700', marginBottom: 4 },
-  emptySubtitle: { color: '#64748b', fontSize: 13, textAlign: 'center', lineHeight: 18 },
+  customer: {
+    color: theme.colors.ink,
+    fontSize: 15,
+    fontWeight: '700',
+    flex: 1,
+  },
+  badges: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  subLine: {
+    color: theme.colors.inkMuted,
+    fontSize: 12,
+    marginTop: 4,
+  },
+  cardFooter: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 10,
+    paddingTop: 9,
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.divider,
+  },
+  price: {
+    color: theme.colors.ink,
+    fontWeight: '700',
+    fontSize: 14,
+    fontVariant: ['tabular-nums'],
+  },
+  footerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  agingPill: {
+    backgroundColor: theme.colors.surfaceAlt,
+    borderRadius: theme.radius.pill,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  agingPillUrgent: {
+    backgroundColor: theme.colors.readyBg,
+  },
+  agingText: {
+    color: theme.colors.inkSecondary,
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  agingTextUrgent: {
+    color: theme.colors.ready,
+  },
+  balance: {
+    fontSize: 12,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+  },
+  balanceUnpaid: {
+    color: theme.colors.danger,
+  },
+  balancePaid: {
+    color: theme.colors.claimed,
+  },
 });

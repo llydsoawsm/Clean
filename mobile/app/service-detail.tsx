@@ -7,28 +7,38 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
 import { initDatabase } from '@/db/client';
 import { getServiceById, softDeleteService, updateService } from '@/db/repositories/services';
 import type { PricingType } from '@/db/types';
 import { EmptyState, LoadingState } from '@/components/Feedback';
+import { ScreenHeader } from '@/components/ScreenHeader';
+import { StatusBadge } from '@/components/StatusBadge';
 import { useToast } from '@/components/Toast';
+import {
+  AppButton,
+  Card,
+  FormField,
+  FormInput,
+  OptionChips,
+  useScreenBottomPadding,
+} from '@/components/ui';
+import { theme } from '@/theme';
 
-const pricingOptions: { value: PricingType; label: string }[] = [
-  { value: 'per_load', label: 'Per Load' },
-  { value: 'per_kg', label: 'Per Kg' },
-  { value: 'per_piece', label: 'Per Piece' },
-  { value: 'fixed', label: 'Fixed Price' },
+const pricingOptions: { key: PricingType; label: string }[] = [
+  { key: 'per_load', label: 'Per Load' },
+  { key: 'per_kg', label: 'Per Kilo' },
+  { key: 'per_piece', label: 'Per Piece' },
+  { key: 'fixed', label: 'Fixed' },
 ];
 
 export default function ServiceDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const toast = useToast();
+  const bottomPadding = useScreenBottomPadding();
 
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
@@ -77,19 +87,19 @@ export default function ServiceDetailScreen() {
   const handleSave = async () => {
     if (!id) return;
     if (!name.trim()) {
-      Alert.alert('Required', 'Please enter a service name.');
+      Alert.alert('Required', 'Enter a service name.');
       return;
     }
     const val = parseFloat(price);
     if (isNaN(val) || val < 0) {
-      Alert.alert('Invalid Price', 'Please enter a valid rate.');
+      Alert.alert('Invalid Price', 'Enter a valid price.');
       return;
     }
     let weightBlockGrams: number | null = null;
     if (pricingType === 'per_load') {
       const blockKgVal = parseFloat(weightBlockKg);
       if (isNaN(blockKgVal) || blockKgVal < 1 || blockKgVal > 50) {
-        Alert.alert('Invalid Weight Block', 'Max weight per load must be between 1 and 50 kg.');
+        Alert.alert('Invalid Weight', 'Max kg per load must be between 1 and 50.');
         return;
       }
       weightBlockGrams = Math.round(blockKgVal * 1000);
@@ -116,7 +126,7 @@ export default function ServiceDetailScreen() {
 
   const handleDelete = () => {
     if (!id) return;
-    Alert.alert('Delete Service', 'Are you sure you want to delete this service? Historical orders keep their original price snapshot.', [
+    Alert.alert('Delete Service', `Delete ${name}? Past orders keep their saved price.`, [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Delete',
@@ -127,7 +137,7 @@ export default function ServiceDetailScreen() {
             toast.show('Service deleted', 'info');
             router.back();
           } catch (e) {
-            Alert.alert('Delete Failed', e instanceof Error ? e.message : 'Unable to delete service.');
+            Alert.alert('Error', e instanceof Error ? e.message : 'Unable to delete service.');
           }
         },
       },
@@ -136,101 +146,102 @@ export default function ServiceDetailScreen() {
 
   if (loading) {
     return (
-      <SafeAreaView style={styles.safeArea}>
-        <LoadingState message="Loading service..." />
+      <SafeAreaView style={styles.safeArea} edges={['top']}>
+        <ScreenHeader title="Edit Service" />
+        <LoadingState />
       </SafeAreaView>
     );
   }
 
   if (notFound) {
     return (
-      <SafeAreaView style={styles.safeArea}>
-        <View style={styles.header}>
-          <Pressable onPress={() => router.back()} style={styles.backButton}>
-            <Ionicons name="chevron-back" size={20} color="#1d4ed8" />
-            <Text style={styles.backText}>Back</Text>
-          </Pressable>
-          <Text style={styles.title}>Service Details</Text>
-          <View style={{ width: 50 }} />
-        </View>
-        <EmptyState title="Service Not Found" hint="This service may have been removed." />
+      <SafeAreaView style={styles.safeArea} edges={['top']}>
+        <ScreenHeader title="Edit Service" />
+        <EmptyState icon="tag-outline" title="Service not found" />
       </SafeAreaView>
     );
   }
 
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView style={styles.safeArea} edges={['top']}>
+      <ScreenHeader title="Edit Service" />
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
-        <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-          <View style={styles.header}>
-            <Pressable onPress={() => router.back()} style={styles.backButton}>
-              <Ionicons name="chevron-back" size={20} color="#1d4ed8" />
-              <Text style={styles.backText}>Back</Text>
-            </Pressable>
-            <Text style={styles.title}>Service Details</Text>
-            <View style={{ width: 50 }} />
-          </View>
+        <ScrollView
+          contentContainerStyle={[styles.container, { paddingBottom: bottomPadding }]}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          <Card>
+            <FormField label="Name" first>
+              <FormInput value={name} onChangeText={setName} />
+            </FormField>
 
-          <View style={styles.card}>
-            <Text style={styles.label}>Service Name *</Text>
-            <TextInput style={styles.input} value={name} onChangeText={setName} />
+            <FormField label="Pricing">
+              <OptionChips
+                options={pricingOptions}
+                value={pricingType}
+                onChange={setPricingType}
+                layout="wrap"
+              />
+            </FormField>
 
-            <Text style={styles.label}>Pricing Model</Text>
-            <View style={styles.optionRow}>
-              {pricingOptions.map((opt) => {
-                const active = pricingType === opt.value;
-                return (
-                  <Pressable
-                    key={opt.value}
-                    onPress={() => setPricingType(opt.value)}
-                    style={[styles.optionChip, active && styles.optionChipActive]}
-                  >
-                    <Text style={[styles.optionText, active && styles.optionTextActive]}>{opt.label}</Text>
-                  </Pressable>
-                );
-              })}
-            </View>
+            <FormField label="Price (₱)">
+              <FormInput
+                value={price}
+                onChangeText={setPrice}
+                keyboardType="decimal-pad"
+              />
+            </FormField>
 
-            <Text style={styles.label}>Rate (₱) *</Text>
-            <TextInput style={styles.input} value={price} onChangeText={setPrice} keyboardType="decimal-pad" />
-
-            {pricingType === 'per_load' && (
-              <>
-                <Text style={styles.label}>Max Weight per Load (kg, 1–50)</Text>
-                <TextInput
-                  style={styles.input}
+            {pricingType === 'per_load' ? (
+              <FormField label="Max kg / load">
+                <FormInput
                   value={weightBlockKg}
                   onChangeText={setWeightBlockKg}
                   keyboardType="decimal-pad"
                   placeholder="8"
-                  placeholderTextColor="#94a3b8"
                 />
-              </>
-            )}
+              </FormField>
+            ) : null}
 
-            <Text style={styles.label}>Description</Text>
-            <TextInput style={[styles.input, styles.multiline]} value={description} onChangeText={setDescription} multiline />
+            <FormField label="Note">
+              <FormInput
+                value={description}
+                onChangeText={setDescription}
+                multiline
+                placeholder="Detergent included, etc."
+              />
+            </FormField>
 
             <View style={styles.toggleRow}>
-              <Text style={styles.label}>Status</Text>
+              <Text style={styles.toggleLabel}>Status</Text>
               <Pressable
                 onPress={() => setIsActive(!isActive)}
-                style={[styles.statusToggle, isActive ? styles.statusActive : styles.statusInactive]}
+                hitSlop={8}
+                style={({ pressed }) => [pressed && styles.pressed]}
+                accessibilityRole="switch"
+                accessibilityState={{ checked: isActive }}
               >
-                <Text style={[styles.statusText, isActive ? styles.statusTextActive : styles.statusTextInactive]}>
-                  {isActive ? 'Active' : 'Archived'}
-                </Text>
+                <StatusBadge type="service" value={isActive ? 'ACTIVE' : 'INACTIVE'} />
               </Pressable>
             </View>
 
-            <Pressable onPress={handleSave} disabled={saving} style={[styles.button, saving && styles.buttonDisabled]}>
-              <Text style={styles.buttonText}>{saving ? 'Saving...' : 'Save Changes'}</Text>
-            </Pressable>
+            <AppButton
+              variant="primary"
+              label={saving ? 'Saving...' : 'Save'}
+              onPress={handleSave}
+              loading={saving}
+              style={styles.submitBtn}
+            />
+          </Card>
 
-            <Pressable onPress={handleDelete} style={styles.deleteButton}>
-              <Text style={styles.deleteText}>Delete Service</Text>
-            </Pressable>
-          </View>
+          <AppButton
+            variant="dangerSoft"
+            size="md"
+            icon="trash-can-outline"
+            label="Delete service"
+            onPress={handleDelete}
+          />
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -238,53 +249,32 @@ export default function ServiceDetailScreen() {
 }
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: '#f8fafc' },
-  container: { padding: 18, paddingBottom: 40 },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 },
-  backButton: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  backText: { color: '#1d4ed8', fontSize: 14, fontWeight: '600' },
-  title: { color: '#0f172a', fontSize: 17, fontWeight: '700' },
-  card: { backgroundColor: '#ffffff', borderRadius: 12, padding: 16, borderWidth: 1, borderColor: '#e2e8f0' },
-  label: { color: '#64748b', fontSize: 12, fontWeight: '500', marginBottom: 6, marginTop: 12 },
-  input: {
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 14,
-    backgroundColor: '#f8fafc',
-    color: '#0f172a',
+  safeArea: {
+    flex: 1,
+    backgroundColor: theme.colors.bg,
   },
-  optionRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 2 },
-  optionChip: {
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    backgroundColor: '#ffffff',
+  container: {
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: theme.spacing.sm,
   },
-  optionChipActive: { backgroundColor: '#1d4ed8', borderColor: '#1d4ed8' },
-  optionText: { color: '#64748b', fontSize: 12, fontWeight: '500' },
-  optionTextActive: { color: '#ffffff', fontWeight: '600' },
-  multiline: { minHeight: 60, textAlignVertical: 'top' },
-  toggleRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 12 },
-  statusToggle: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 6 },
-  statusActive: { backgroundColor: '#eff6ff', borderWidth: 1, borderColor: '#bfdbfe' },
-  statusInactive: { backgroundColor: '#f1f5f9', borderWidth: 1, borderColor: '#e2e8f0' },
-  statusText: { fontSize: 12, fontWeight: '600' },
-  statusTextActive: { color: '#1d4ed8' },
-  statusTextInactive: { color: '#64748b' },
-  button: {
-    backgroundColor: '#1d4ed8',
-    borderRadius: 10,
-    paddingVertical: 13,
+  toggleRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
     alignItems: 'center',
-    marginTop: 22,
+    marginTop: theme.spacing.lg,
+    paddingTop: theme.spacing.md,
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.divider,
   },
-  buttonDisabled: { opacity: 0.6 },
-  buttonText: { color: '#ffffff', fontSize: 15, fontWeight: '600' },
-  deleteButton: { marginTop: 12, paddingVertical: 10, alignItems: 'center' },
-  deleteText: { color: '#dc2626', fontSize: 13, fontWeight: '500' },
+  toggleLabel: {
+    color: theme.colors.ink,
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  pressed: {
+    opacity: theme.layout.pressedOpacity,
+  },
+  submitBtn: {
+    marginTop: theme.spacing.xl,
+  },
 });

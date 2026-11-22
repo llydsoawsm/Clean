@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   KeyboardAvoidingView,
@@ -12,16 +12,30 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useAuthSession } from '@/context/AuthContext';
 import { initDatabase } from '@/db/client';
 import { getCustomerById, searchCustomers } from '@/db/repositories/customers';
 import { listServices } from '@/db/repositories/services';
 import { createOrder } from '@/db/repositories/orders';
 import type { CustomerRow, PaymentMethod, ServiceRow } from '@/db/types';
-import { calcBaseCost, calcBalance, calcLoads, calcTotal, derivePaymentStatus, formatPHP } from '@/utils/money';
+import { calcBaseCost, calcBalance, calcLoads, calcTotal, formatPHP } from '@/utils/money';
 import { LoadingState } from '@/components/Feedback';
+import { ScreenHeader } from '@/components/ScreenHeader';
 import { useToast } from '@/components/Toast';
+import {
+  AppButton,
+  Card,
+  Divider,
+  FormField,
+  FormInput,
+  KeyValueRow,
+  OptionChips,
+  SearchBar,
+  SectionHeader,
+  useScreenBottomPadding,
+} from '@/components/ui';
+import { avatarTone, getInitials, shortTicket, theme } from '@/theme';
 
 const paymentMethods: { key: PaymentMethod; label: string }[] = [
   { key: 'CASH', label: 'Cash' },
@@ -36,7 +50,7 @@ function serviceRateLabel(s: ServiceRow): string {
     return `${rate} / ${kg}kg`;
   }
   if (s.pricing_type === 'per_kg') return `${rate}/kg`;
-  if (s.pricing_type === 'per_piece') return `${rate}/piece`;
+  if (s.pricing_type === 'per_piece') return `${rate}/pc`;
   return `${rate} fixed`;
 }
 
@@ -44,6 +58,7 @@ export default function ReceiveScreen() {
   const { customerId } = useLocalSearchParams<{ customerId?: string }>();
   const session = useAuthSession();
   const toast = useToast();
+  const bottomPadding = useScreenBottomPadding();
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -65,16 +80,21 @@ export default function ReceiveScreen() {
   const [rushFee, setRushFee] = useState(defaultRushPesos);
   const [isRush, setIsRush] = useState(false);
   const [amountPaid, setAmountPaid] = useState('0');
+  const [paidFull, setPaidFull] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('CASH');
   const [paymentReference, setPaymentReference] = useState('');
   const [notes, setNotes] = useState('');
+
+  const appliedParamCustomerIdRef = useRef<string | null>(null);
+  const customerQueryRef = useRef(customerQuery);
+  customerQueryRef.current = customerQuery;
 
   const loadData = useCallback(async () => {
     if (!session) return;
     try {
       await initDatabase();
       const [custs, srvs] = await Promise.all([
-        searchCustomers(customerQuery, session.shop.id),
+        searchCustomers(customerQueryRef.current, session.shop.id),
         listServices(session.shop.id, false),
       ]);
       setCustomerResults(custs);
@@ -85,16 +105,19 @@ export default function ReceiveScreen() {
         }
         return srvs[0] ?? null;
       });
-      if (customerId) {
+      if (customerId && appliedParamCustomerIdRef.current !== customerId) {
         const found = await getCustomerById(customerId);
-        if (found) setSelectedCustomer(found);
+        if (found) {
+          setSelectedCustomer(found);
+          appliedParamCustomerIdRef.current = customerId;
+        }
       }
     } catch (e) {
       console.warn('[Receive] load error:', e);
     } finally {
       setLoading(false);
     }
-  }, [session, customerId, customerQuery]);
+  }, [session, customerId]);
 
   useFocusEffect(
     useCallback(() => {
@@ -156,9 +179,14 @@ export default function ReceiveScreen() {
   }, [selectedService, parsedWeightGrams, parsedQuantity, weightBlockGrams]);
 
   const totalCents = useMemo(() => calcTotal(baseCents, additionalCents, rushCents), [baseCents, additionalCents, rushCents]);
-  const balanceCents = useMemo(() => calcBalance(totalCents, paidCents), [totalCents, paidCents]);
-  const paymentStatus = useMemo(() => derivePaymentStatus(totalCents, paidCents), [totalCents, paidCents]);
 
+  useEffect(() => {
+    if (paidFull) {
+      setAmountPaid((totalCents / 100).toFixed(2));
+    }
+  }, [paidFull, totalCents]);
+
+  const balanceCents = useMemo(() => calcBalance(totalCents, paidCents), [totalCents, paidCents]);
   const isOverpaid = paidCents > totalCents;
 
   const canCreate = useMemo(() => {
@@ -171,13 +199,27 @@ export default function ReceiveScreen() {
     return true;
   }, [session, selectedCustomer, selectedService, parsedWeightGrams, parsedQuantity, totalCents, paidCents]);
 
+  const stepAmount = (delta: number) => {
+    if (!selectedService) return;
+    if (selectedService.pricing_type === 'per_piece') {
+      const current = parseInt(quantity, 10);
+      const base = isNaN(current) ? 1 : current;
+      setQuantity(String(Math.max(1, base + delta)));
+      return;
+    }
+    const current = parseFloat(weightKg);
+    const base = isNaN(current) ? 1 : current;
+    const next = Math.max(1, Math.round((base + delta) * 10) / 10);
+    setWeightKg(String(next));
+  };
+
   const handleCreate = async () => {
     if (!session || !selectedCustomer || !selectedService) {
-      Alert.alert('Missing Details', 'Please select a customer and service.');
+      Alert.alert('Missing Details', 'Select a customer and service.');
       return;
     }
     if (paidCents > totalCents) {
-      Alert.alert('Overpayment', 'Initial payment cannot exceed total order amount.');
+      Alert.alert('Overpayment', 'Payment cannot exceed total amount.');
       return;
     }
 
@@ -206,11 +248,8 @@ export default function ReceiveScreen() {
         notes: notes.trim() || null,
       });
 
-      toast.show(`Order ${created.order_number} created`, 'success');
-      Alert.alert('Order Created', `Order ${created.order_number} for ${selectedCustomer.name} has been received.`, [
-        { text: 'View Order', onPress: () => router.replace({ pathname: '/order-detail' as any, params: { id: created.id } }) },
-        { text: 'Orders List', onPress: () => router.replace('/orders' as any) },
-      ]);
+      toast.show(`Order ${shortTicket(created.order_number)} saved`, 'success');
+      router.replace({ pathname: '/order-detail' as any, params: { id: created.id } });
     } catch (e) {
       Alert.alert('Cannot Create Order', e instanceof Error ? e.message : 'Unable to create order.');
     } finally {
@@ -220,96 +259,115 @@ export default function ReceiveScreen() {
 
   if (loading) {
     return (
-      <SafeAreaView style={styles.safeArea}>
-        <LoadingState message="Preparing order form..." />
+      <SafeAreaView style={styles.safeArea} edges={['top']}>
+        <ScreenHeader title="New Drop-off" />
+        <LoadingState />
       </SafeAreaView>
     );
   }
 
-  return (
-    <SafeAreaView style={styles.safeArea}>
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
-        <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-          {/* Header */}
-          <View style={styles.header}>
-            <Pressable onPress={() => router.back()} style={styles.backButton}>
-              <Ionicons name="chevron-back" size={20} color="#1d4ed8" />
-              <Text style={styles.backText}>Back</Text>
-            </Pressable>
-            <Text style={styles.title}>New Laundry Order</Text>
-            <View style={{ width: 50 }} />
-          </View>
+  const isUnpaidActive = !paidFull && paidCents === 0;
+  const isFullActive = paidFull;
 
-          {/* 1. Customer Selection */}
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>1. Customer</Text>
+  return (
+    <SafeAreaView style={styles.safeArea} edges={['top']}>
+      <ScreenHeader title="New Drop-off" />
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
+        <ScrollView
+          contentContainerStyle={[styles.container, { paddingBottom: bottomPadding }]}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          {/* Customer */}
+          <Card>
+            <SectionHeader title="Customer" />
             {selectedCustomer ? (
               <View style={styles.selectedBox}>
-                <View style={styles.selectedInfo}>
-                  <Text style={styles.selectedName}>{selectedCustomer.name}</Text>
-                  <Text style={styles.selectedContact}>{selectedCustomer.contact_number}</Text>
-                  {selectedCustomer.address ? <Text style={styles.selectedAddress}>{selectedCustomer.address}</Text> : null}
+                <View style={[styles.avatar, { backgroundColor: avatarTone(selectedCustomer.name).bg }]}>
+                  <Text style={[styles.avatarText, { color: avatarTone(selectedCustomer.name).fg }]}>
+                    {getInitials(selectedCustomer.name)}
+                  </Text>
                 </View>
-                <Pressable onPress={() => setSelectedCustomer(null)} style={styles.changeBtn}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.selectedName} numberOfLines={1}>
+                    {selectedCustomer.name}
+                  </Text>
+                  <Text style={styles.selectedContact}>{selectedCustomer.contact_number}</Text>
+                </View>
+                <Pressable
+                  onPress={() => setSelectedCustomer(null)}
+                  style={({ pressed }) => [styles.changeBtn, pressed && styles.pressed]}
+                >
                   <Text style={styles.changeBtnText}>Change</Text>
                 </Pressable>
               </View>
             ) : (
               <View>
-                <TextInput
-                  placeholder="Search customer by name or contact"
-                  placeholderTextColor="#94a3b8"
+                <SearchBar
                   value={customerQuery}
                   onChangeText={setCustomerQuery}
-                  style={styles.input}
-                  autoCapitalize="none"
+                  placeholder="Search name or phone"
+                  surface="inset"
                 />
 
                 <View style={styles.customerList}>
                   {customerResults.length === 0 ? (
-                    <Text style={styles.emptyHint}>No customers found. Add one below.</Text>
+                    <Text style={styles.emptyHint}>No match</Text>
                   ) : (
-                    customerResults.map((c) => (
-                      <Pressable
-                        key={c.id}
-                        onPress={() => setSelectedCustomer(c)}
-                        style={({ pressed }) => [styles.customerRow, pressed && styles.rowPressed]}
-                      >
-                        <View style={styles.customerRowLeft}>
-                          <View style={styles.customerAvatar}>
-                            <Ionicons name="person-outline" size={16} color="#1d4ed8" />
+                    customerResults.slice(0, 6).map((c, idx) => {
+                      const tone = avatarTone(c.name);
+                      return (
+                        <Pressable
+                          key={c.id}
+                          onPress={() => setSelectedCustomer(c)}
+                          style={({ pressed }) => [
+                            styles.customerRow,
+                            idx > 0 && styles.customerRowBorder,
+                            pressed && styles.rowPressed,
+                          ]}
+                        >
+                          <View style={[styles.avatarSmall, { backgroundColor: tone.bg }]}>
+                            <Text style={[styles.avatarTextSmall, { color: tone.fg }]}>
+                              {getInitials(c.name)}
+                            </Text>
                           </View>
-                          <View>
-                            <Text style={styles.customerName}>{c.name}</Text>
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.customerName} numberOfLines={1}>
+                              {c.name}
+                            </Text>
                             <Text style={styles.customerContact}>{c.contact_number}</Text>
                           </View>
-                        </View>
-                        <View style={styles.selectBadge}>
-                          <Text style={styles.selectBadgeText}>Select</Text>
-                        </View>
-                      </Pressable>
-                    ))
+                          <Text style={styles.selectLabel}>Select</Text>
+                        </Pressable>
+                      );
+                    })
                   )}
                 </View>
 
-                <Pressable onPress={() => router.push('/customer-add' as any)} style={styles.addNewCustBtn}>
-                  <Ionicons name="add" size={16} color="#1d4ed8" />
-                  <Text style={styles.addNewCustText}>Add New Customer</Text>
-                </Pressable>
+                <AppButton
+                  variant="soft"
+                  size="md"
+                  icon="plus"
+                  label="New Customer"
+                  onPress={() => router.push('/customer-add' as any)}
+                  style={styles.newCustSpacing}
+                />
               </View>
             )}
-          </View>
+          </Card>
 
-          {/* 2. Service */}
-          <View style={styles.card}>
-            <View style={styles.cardTitleRow}>
-              <Text style={styles.cardTitle}>2. Service</Text>
-              <Pressable onPress={() => router.push('/service-add' as any)}>
-                <Text style={styles.linkSmall}>+ Add Service</Text>
-              </Pressable>
-            </View>
+          {/* Service */}
+          <Card>
+            <SectionHeader
+              title="Service"
+              right={
+                <Pressable onPress={() => router.push('/service-add' as any)} hitSlop={8}>
+                  <Text style={styles.linkSmall}>+ Add</Text>
+                </Pressable>
+              }
+            />
             {services.length === 0 ? (
-              <Text style={styles.emptyHint}>No active services yet. Tap "+ Add Service" above.</Text>
+              <Text style={styles.emptyHint}>No active services yet</Text>
             ) : (
               <View style={styles.serviceGrid}>
                 {services.map((s) => {
@@ -318,198 +376,220 @@ export default function ReceiveScreen() {
                     <Pressable
                       key={s.id}
                       onPress={() => setSelectedService(s)}
-                      style={[styles.serviceChip, active && styles.serviceChipActive]}
+                      style={({ pressed }) => [
+                        styles.serviceChip,
+                        active && styles.serviceChipActive,
+                        pressed && styles.pressed,
+                      ]}
                     >
-                      <Text style={[styles.serviceName, active && styles.serviceNameActive]}>{s.name}</Text>
-                      <Text style={[styles.servicePrice, active && styles.servicePriceActive]}>{serviceRateLabel(s)}</Text>
+                      <View style={styles.serviceTop}>
+                        <Text style={[styles.serviceName, active && styles.serviceNameActive]} numberOfLines={1}>
+                          {s.name}
+                        </Text>
+                        {active ? (
+                          <MaterialCommunityIcons name="check-circle" size={16} color={theme.colors.brand} />
+                        ) : null}
+                      </View>
+                      <Text style={[styles.servicePrice, active && styles.servicePriceActive]}>
+                        {serviceRateLabel(s)}
+                      </Text>
                     </Pressable>
                   );
                 })}
               </View>
             )}
-          </View>
+          </Card>
 
-          {/* 3. Weight / Quantity (hidden for FIXED services) */}
+          {/* Weight / Quantity Stepper */}
           {selectedService && selectedService.pricing_type !== 'fixed' ? (
-            <View style={styles.card}>
-              <Text style={styles.cardTitle}>
-                {selectedService.pricing_type === 'per_piece' ? '3. Quantity (pieces)' : '3. Weight (kg)'}
-              </Text>
-              {selectedService.pricing_type === 'per_piece' ? (
+            <Card>
+              <SectionHeader
+                title={selectedService.pricing_type === 'per_piece' ? 'Pieces' : 'Weight (kg)'}
+              />
+
+              <View style={styles.stepperRow}>
+                <Pressable
+                  onPress={() => stepAmount(-1)}
+                  style={({ pressed }) => [styles.stepBtn, pressed && styles.pressed]}
+                  accessibilityLabel="Decrease"
+                >
+                  <MaterialCommunityIcons name="minus" size={20} color={theme.colors.ink} />
+                </Pressable>
+
                 <TextInput
-                  placeholder="1"
-                  placeholderTextColor="#94a3b8"
-                  value={quantity}
-                  onChangeText={setQuantity}
-                  keyboardType="number-pad"
-                  style={styles.input}
+                  placeholder={selectedService.pricing_type === 'per_piece' ? '1' : '0.0'}
+                  placeholderTextColor={theme.colors.inkMuted}
+                  value={selectedService.pricing_type === 'per_piece' ? quantity : weightKg}
+                  onChangeText={selectedService.pricing_type === 'per_piece' ? setQuantity : setWeightKg}
+                  keyboardType={selectedService.pricing_type === 'per_piece' ? 'number-pad' : 'decimal-pad'}
+                  style={styles.stepperInput}
                 />
-              ) : (
-                <>
-                  <TextInput
-                    placeholder="0.0"
-                    placeholderTextColor="#94a3b8"
-                    value={weightKg}
-                    onChangeText={setWeightKg}
-                    keyboardType="decimal-pad"
-                    style={styles.input}
-                  />
-                  {selectedService.pricing_type === 'per_load' && loads > 0 ? (
-                    <Text style={styles.loadCalcHint}>
-                      {loads} {loads === 1 ? 'Load' : 'Loads'} ({weightBlockGrams / 1000}kg/load) • Base {formatPHP(baseCents)}
-                    </Text>
-                  ) : null}
-                </>
-              )}
-            </View>
+
+                <Pressable
+                  onPress={() => stepAmount(1)}
+                  style={({ pressed }) => [styles.stepBtn, pressed && styles.pressed]}
+                  accessibilityLabel="Increase"
+                >
+                  <MaterialCommunityIcons name="plus" size={20} color={theme.colors.ink} />
+                </Pressable>
+              </View>
+
+              {selectedService.pricing_type === 'per_load' && loads > 0 ? (
+                <View style={styles.loadPill}>
+                  <Text style={styles.loadCalcHint}>
+                    {loads} {loads === 1 ? 'load' : 'loads'} · {formatPHP(baseCents)}
+                  </Text>
+                </View>
+              ) : null}
+            </Card>
           ) : null}
 
-          {/* 4. Fees, Rush & Initial Payment */}
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>Details, Fees & Payment</Text>
-
+          {/* Extras & Note */}
+          <Card>
             <View style={styles.rushRow}>
-              <Text style={styles.label}>Rush Order</Text>
-              <Pressable onPress={() => setIsRush(!isRush)} style={[styles.rushPill, isRush && styles.rushPillActive]}>
+              <View style={styles.rushLabelWrap}>
+                <MaterialCommunityIcons name="lightning-bolt" size={18} color={theme.colors.rush} />
+                <Text style={styles.rushLabel}>Rush</Text>
+              </View>
+              <Pressable
+                onPress={() => setIsRush(!isRush)}
+                style={({ pressed }) => [
+                  styles.rushPill,
+                  isRush && styles.rushPillActive,
+                  pressed && styles.pressed,
+                ]}
+              >
                 <Text style={[styles.rushText, isRush && styles.rushTextActive]}>
-                  {isRush ? `Yes (+${formatPHP(rushCents)})` : 'No'}
+                  {isRush ? `+${formatPHP(rushCents)}` : 'Off'}
                 </Text>
               </Pressable>
             </View>
 
             {isRush ? (
-              <>
-                <Text style={styles.label}>Rush Fee (₱)</Text>
-                <TextInput
+              <FormField label="Rush fee (₱)">
+                <FormInput
                   placeholder="50"
-                  placeholderTextColor="#94a3b8"
                   value={rushFee}
                   onChangeText={setRushFee}
                   keyboardType="decimal-pad"
-                  style={styles.input}
                 />
-              </>
+              </FormField>
             ) : null}
 
-            <Text style={styles.label}>Additional Fee (₱, Optional)</Text>
-            <TextInput
-              placeholder="0.00 (e.g. extra fabcon, stain removal)"
-              placeholderTextColor="#94a3b8"
-              value={additionalFee}
-              onChangeText={setAdditionalFee}
-              keyboardType="decimal-pad"
-              style={styles.input}
+            <FormField label="Extra fee (₱)">
+              <FormInput
+                placeholder="0.00"
+                value={additionalFee}
+                onChangeText={setAdditionalFee}
+                keyboardType="decimal-pad"
+              />
+            </FormField>
+
+            <FormField label="Note">
+              <FormInput
+                placeholder="Separate whites, extra fabcon..."
+                value={notes}
+                onChangeText={setNotes}
+              />
+            </FormField>
+          </Card>
+
+          {/* Payment */}
+          <Card>
+            <SectionHeader
+              title="Payment"
+              right={
+                <View style={styles.quickPayRow}>
+                  <Pressable
+                    onPress={() => {
+                      setPaidFull(false);
+                      setAmountPaid('0');
+                    }}
+                    style={({ pressed }) => [
+                      styles.quickPayChip,
+                      isUnpaidActive && styles.quickPayChipActive,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text style={[styles.quickPayText, isUnpaidActive && styles.quickPayTextActive]}>
+                      Unpaid
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => {
+                      setPaidFull(true);
+                      setAmountPaid((totalCents / 100).toFixed(2));
+                    }}
+                    style={({ pressed }) => [
+                      styles.quickPayChip,
+                      isFullActive && styles.quickPayChipActive,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text style={[styles.quickPayText, isFullActive && styles.quickPayTextActive]}>
+                      Full
+                    </Text>
+                  </Pressable>
+                </View>
+              }
             />
 
-            <View style={styles.payHeaderRow}>
-              <Text style={styles.label}>Initial Payment (₱)</Text>
-              <View style={styles.quickPayRow}>
-                <Pressable onPress={() => setAmountPaid((totalCents / 100).toFixed(2))} style={styles.quickPayChip}>
-                  <Text style={styles.quickPayText}>Full ({formatPHP(totalCents)})</Text>
-                </Pressable>
-                <Pressable onPress={() => setAmountPaid('0')} style={styles.quickPayChip}>
-                  <Text style={styles.quickPayText}>₱0 (Unpaid)</Text>
-                </Pressable>
-              </View>
-            </View>
-            <TextInput
+            <FormInput
               placeholder="0.00"
-              placeholderTextColor="#94a3b8"
               value={amountPaid}
-              onChangeText={setAmountPaid}
+              onChangeText={(val) => {
+                setPaidFull(false);
+                setAmountPaid(val);
+              }}
               keyboardType="decimal-pad"
-              style={styles.input}
             />
-            {isOverpaid ? <Text style={styles.error}>Initial payment cannot exceed {formatPHP(totalCents)}.</Text> : null}
+            {isOverpaid ? (
+              <Text style={styles.error}>Cannot exceed {formatPHP(totalCents)}.</Text>
+            ) : null}
 
             {paidCents > 0 ? (
-              <>
-                <Text style={styles.label}>Payment Method</Text>
-                <View style={styles.methodRow}>
-                  {paymentMethods.map((m) => {
-                    const active = paymentMethod === m.key;
-                    return (
-                      <Pressable
-                        key={m.key}
-                        onPress={() => setPaymentMethod(m.key)}
-                        style={[styles.methodChip, active && styles.methodChipActive]}
-                      >
-                        <Text style={[styles.methodText, active && styles.methodTextActive]}>{m.label}</Text>
-                      </Pressable>
-                    );
-                  })}
-                </View>
+              <View style={styles.methodWrap}>
+                <OptionChips
+                  options={paymentMethods}
+                  value={paymentMethod}
+                  onChange={setPaymentMethod}
+                  layout="equal"
+                />
 
                 {paymentMethod !== 'CASH' ? (
-                  <>
-                    <Text style={styles.label}>Reference Number (Optional)</Text>
-                    <TextInput
-                      placeholder="GCash / Transaction Ref"
-                      placeholderTextColor="#94a3b8"
-                      value={paymentReference}
-                      onChangeText={setPaymentReference}
-                      style={styles.input}
-                    />
-                  </>
+                  <FormInput
+                    placeholder="Reference #"
+                    value={paymentReference}
+                    onChangeText={setPaymentReference}
+                    containerStyle={styles.refSpacing}
+                  />
                 ) : null}
-              </>
+              </View>
             ) : null}
+          </Card>
 
-            <Text style={styles.label}>Special Notes</Text>
-            <TextInput
-              placeholder="Optional instructions..."
-              placeholderTextColor="#94a3b8"
-              value={notes}
-              onChangeText={setNotes}
-              style={[styles.input, { minHeight: 44 }]}
+          {/* Receipt Summary */}
+          <Card>
+            <KeyValueRow compact label="Total" value={formatPHP(totalCents)} emphasis="bold" />
+            <KeyValueRow compact label="Paid" value={formatPHP(paidCents)} />
+            <Divider spacing={8} />
+            <KeyValueRow
+              compact
+              label="Balance"
+              value={formatPHP(Math.max(0, balanceCents))}
+              emphasis="total"
+              valueColor={balanceCents > 0 ? theme.colors.danger : theme.colors.claimed}
             />
-          </View>
+          </Card>
 
-          {/* 5. Summary */}
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>Summary</Text>
-            <View style={styles.summaryRow}>
-              <Text style={styles.summaryLabel}>Customer</Text>
-              <Text style={styles.summaryValue}>{selectedCustomer ? selectedCustomer.name : 'None selected'}</Text>
-            </View>
-            <View style={styles.summaryRow}>
-              <Text style={styles.summaryLabel}>Base Cost</Text>
-              <Text style={styles.summaryValue}>{formatPHP(baseCents)}</Text>
-            </View>
-            {additionalCents > 0 ? (
-              <View style={styles.summaryRow}>
-                <Text style={styles.summaryLabel}>Additional Fee</Text>
-                <Text style={styles.summaryValue}>{formatPHP(additionalCents)}</Text>
-              </View>
-            ) : null}
-            {rushCents > 0 ? (
-              <View style={styles.summaryRow}>
-                <Text style={styles.summaryLabel}>Rush Fee</Text>
-                <Text style={styles.summaryValue}>{formatPHP(rushCents)}</Text>
-              </View>
-            ) : null}
-            <View style={styles.summaryRow}>
-              <Text style={styles.summaryLabel}>Total Amount</Text>
-              <Text style={styles.summaryTotal}>{formatPHP(totalCents)}</Text>
-            </View>
-            <View style={styles.summaryRow}>
-              <Text style={styles.summaryLabel}>Paid ({paymentStatus})</Text>
-              <Text style={styles.summaryValue}>{formatPHP(paidCents)}</Text>
-            </View>
-            <View style={styles.divider} />
-            <View style={styles.summaryRow}>
-              <Text style={styles.summaryLabelBold}>Balance</Text>
-              <Text style={styles.summaryBalance}>{formatPHP(Math.max(0, balanceCents))}</Text>
-            </View>
-          </View>
-
-          <Pressable
+          <AppButton
+            variant="primary"
+            label={saving ? 'Saving...' : 'Create Order'}
             onPress={handleCreate}
+            loading={saving}
             disabled={!canCreate || saving}
-            style={[styles.createButton, (!canCreate || saving) && styles.buttonDisabled]}
-          >
-            <Text style={styles.createText}>{saving ? 'Creating Order...' : 'Confirm & Create Order'}</Text>
-          </Pressable>
+            style={styles.createSpacing}
+          />
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -517,106 +597,271 @@ export default function ReceiveScreen() {
 }
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: '#f8fafc' },
-  container: { padding: 18, paddingBottom: 40 },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 },
-  backButton: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  backText: { color: '#1d4ed8', fontSize: 14, fontWeight: '600' },
-  title: { color: '#0f172a', fontSize: 17, fontWeight: '700' },
-  card: { backgroundColor: '#ffffff', borderRadius: 12, padding: 16, marginBottom: 12, borderWidth: 1, borderColor: '#e2e8f0' },
-  cardTitleRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
-  cardTitle: { color: '#0f172a', fontSize: 13, fontWeight: '600', marginBottom: 10 },
-  linkSmall: { color: '#1d4ed8', fontSize: 12, fontWeight: '600', marginBottom: 10 },
-  label: { color: '#64748b', fontSize: 12, fontWeight: '500', marginBottom: 6, marginTop: 8 },
-  input: {
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 14,
-    backgroundColor: '#f8fafc',
-    color: '#0f172a',
+  safeArea: {
+    flex: 1,
+    backgroundColor: theme.colors.bg,
   },
-  emptyHint: { color: '#94a3b8', fontSize: 12, paddingVertical: 8 },
-  loadCalcHint: { color: '#1d4ed8', fontSize: 12, fontWeight: '600', marginTop: 6 },
+  container: {
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: theme.spacing.sm,
+  },
+  linkSmall: {
+    color: theme.colors.brand,
+    fontSize: 13,
+    fontWeight: '600',
+  },
   selectedBox: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    backgroundColor: '#eff6ff',
-    borderRadius: 8,
+    gap: 12,
+    backgroundColor: theme.colors.brandSoft,
+    borderRadius: theme.radius.md,
     padding: 12,
     borderWidth: 1,
-    borderColor: '#dbeafe',
+    borderColor: theme.colors.brandBorder,
   },
-  selectedInfo: { flex: 1 },
-  selectedName: { color: '#0f172a', fontWeight: '700', fontSize: 14 },
-  selectedContact: { color: '#1d4ed8', fontSize: 12, marginTop: 2 },
-  selectedAddress: { color: '#64748b', fontSize: 11, marginTop: 2 },
-  changeBtn: { backgroundColor: '#ffffff', borderRadius: 6, paddingHorizontal: 10, paddingVertical: 5, borderWidth: 1, borderColor: '#bfdbfe' },
-  changeBtnText: { color: '#1d4ed8', fontSize: 12, fontWeight: '600' },
-  customerList: { marginTop: 10 },
+  avatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  avatarText: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  selectedName: {
+    color: theme.colors.ink,
+    fontWeight: '700',
+    fontSize: 15,
+  },
+  selectedContact: {
+    color: theme.colors.brand,
+    fontSize: 12,
+    marginTop: 1,
+    fontWeight: '500',
+  },
+  changeBtn: {
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.pill,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderWidth: 1,
+    borderColor: theme.colors.brandBorder,
+  },
+  changeBtnText: {
+    color: theme.colors.brand,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  customerList: {
+    marginTop: theme.spacing.sm,
+  },
   customerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 10,
+  },
+  customerRowBorder: {
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.divider,
+  },
+  rowPressed: {
+    backgroundColor: theme.colors.surfaceWarm,
+  },
+  avatarSmall: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  avatarTextSmall: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  customerName: {
+    color: theme.colors.ink,
+    fontWeight: '600',
+    fontSize: 14,
+  },
+  customerContact: {
+    color: theme.colors.inkMuted,
+    fontSize: 12,
+    marginTop: 1,
+  },
+  selectLabel: {
+    color: theme.colors.brand,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  emptyHint: {
+    color: theme.colors.inkMuted,
+    fontSize: 13,
+    paddingVertical: 10,
+  },
+  newCustSpacing: {
+    marginTop: theme.spacing.xs,
+  },
+  serviceGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  serviceChip: {
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.radius.md,
+    padding: 12,
+    backgroundColor: theme.colors.surfaceWarm,
+    width: '48.5%',
+  },
+  serviceChipActive: {
+    backgroundColor: theme.colors.brandSoft,
+    borderColor: theme.colors.brand,
+    borderWidth: 1.5,
+  },
+  serviceTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 4,
+  },
+  serviceName: {
+    color: theme.colors.ink,
+    fontWeight: '600',
+    fontSize: 13,
+    flex: 1,
+  },
+  serviceNameActive: {
+    color: theme.colors.ink,
+    fontWeight: '700',
+  },
+  servicePrice: {
+    color: theme.colors.inkSecondary,
+    fontWeight: '600',
+    fontSize: 12,
+    marginTop: 4,
+    fontVariant: ['tabular-nums'],
+  },
+  servicePriceActive: {
+    color: theme.colors.brand,
+    fontWeight: '700',
+  },
+  stepperRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  stepBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.surfaceAlt,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  stepperInput: {
+    flex: 1,
+    minHeight: 44,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.radius.md,
+    paddingVertical: 10,
+    fontSize: 18,
+    fontWeight: '700',
+    textAlign: 'center',
+    backgroundColor: theme.colors.surfaceWarm,
+    color: theme.colors.ink,
+    fontVariant: ['tabular-nums'],
+  },
+  loadPill: {
+    alignSelf: 'flex-start',
+    marginTop: 10,
+    backgroundColor: theme.colors.brandSoft,
+    borderRadius: theme.radius.pill,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  loadCalcHint: {
+    color: theme.colors.brand,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  rushRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingVertical: 10,
-    paddingHorizontal: 8,
-    borderRadius: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: '#f1f5f9',
   },
-  rowPressed: { backgroundColor: '#f1f5f9' },
-  customerRowLeft: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  customerAvatar: { width: 32, height: 32, borderRadius: 6, backgroundColor: '#eff6ff', alignItems: 'center', justifyContent: 'center' },
-  customerName: { color: '#0f172a', fontWeight: '600', fontSize: 13 },
-  customerContact: { color: '#64748b', fontSize: 11, marginTop: 1 },
-  selectBadge: { backgroundColor: '#eff6ff', borderRadius: 6, paddingHorizontal: 10, paddingVertical: 5, borderWidth: 1, borderColor: '#bfdbfe' },
-  selectBadgeText: { color: '#1d4ed8', fontSize: 11, fontWeight: '600' },
-  addNewCustBtn: {
+  rushLabelWrap: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
     gap: 6,
-    paddingVertical: 10,
-    marginTop: 8,
-    borderRadius: 8,
-    backgroundColor: '#f8fafc',
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
   },
-  addNewCustText: { color: '#1d4ed8', fontSize: 13, fontWeight: '600' },
-  serviceGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  serviceChip: { borderWidth: 1, borderColor: '#e2e8f0', borderRadius: 8, padding: 12, backgroundColor: '#ffffff', width: '48%' },
-  serviceChipActive: { backgroundColor: '#1d4ed8', borderColor: '#1d4ed8' },
-  serviceName: { color: '#0f172a', fontWeight: '600', fontSize: 13 },
-  serviceNameActive: { color: '#ffffff' },
-  servicePrice: { color: '#1d4ed8', fontWeight: '700', fontSize: 12, marginTop: 2 },
-  servicePriceActive: { color: '#bfdbfe' },
-  rushRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 4 },
-  rushPill: { backgroundColor: '#f1f5f9', borderRadius: 6, paddingHorizontal: 12, paddingVertical: 6, borderWidth: 1, borderColor: '#e2e8f0' },
-  rushPillActive: { backgroundColor: '#eff6ff', borderColor: '#93c5fd' },
-  rushText: { color: '#64748b', fontSize: 12, fontWeight: '600' },
-  rushTextActive: { color: '#1d4ed8' },
-  payHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 10, marginBottom: 4 },
-  quickPayRow: { flexDirection: 'row', gap: 6 },
-  quickPayChip: { backgroundColor: '#eff6ff', borderRadius: 6, paddingHorizontal: 8, paddingVertical: 3, borderWidth: 1, borderColor: '#bfdbfe' },
-  quickPayText: { color: '#1d4ed8', fontSize: 11, fontWeight: '600' },
-  methodRow: { flexDirection: 'row', gap: 8 },
-  methodChip: { flex: 1, borderWidth: 1, borderColor: '#e2e8f0', borderRadius: 8, paddingVertical: 8, alignItems: 'center', backgroundColor: '#ffffff' },
-  methodChipActive: { backgroundColor: '#1d4ed8', borderColor: '#1d4ed8' },
-  methodText: { color: '#64748b', fontSize: 12, fontWeight: '600' },
-  methodTextActive: { color: '#ffffff' },
-  summaryRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4 },
-  summaryLabel: { color: '#64748b', fontSize: 13 },
-  summaryLabelBold: { color: '#0f172a', fontSize: 14, fontWeight: '700' },
-  summaryValue: { color: '#0f172a', fontSize: 13, fontWeight: '600' },
-  summaryTotal: { color: '#0f172a', fontSize: 14, fontWeight: '700' },
-  summaryBalance: { color: '#1d4ed8', fontSize: 16, fontWeight: '700' },
-  divider: { height: 1, backgroundColor: '#f1f5f9', marginVertical: 8 },
-  error: { color: '#b91c1c', fontSize: 12, marginTop: 6 },
-  createButton: { backgroundColor: '#1d4ed8', borderRadius: 10, paddingVertical: 14, alignItems: 'center', marginTop: 12 },
-  buttonDisabled: { opacity: 0.5 },
-  createText: { color: '#ffffff', fontSize: 15, fontWeight: '700' },
+  rushLabel: {
+    color: theme.colors.ink,
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  rushPill: {
+    backgroundColor: theme.colors.surfaceAlt,
+    borderRadius: theme.radius.pill,
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+  },
+  rushPillActive: {
+    backgroundColor: theme.colors.rushBg,
+  },
+  rushText: {
+    color: theme.colors.inkSecondary,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  rushTextActive: {
+    color: theme.colors.rush,
+  },
+  quickPayRow: {
+    flexDirection: 'row',
+    gap: 6,
+  },
+  quickPayChip: {
+    backgroundColor: theme.colors.surfaceAlt,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.radius.pill,
+    paddingHorizontal: 11,
+    paddingVertical: 5,
+  },
+  quickPayChipActive: {
+    backgroundColor: theme.colors.brandSoft,
+    borderColor: theme.colors.brandBorder,
+  },
+  quickPayText: {
+    color: theme.colors.inkSecondary,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  quickPayTextActive: {
+    color: theme.colors.brand,
+    fontWeight: '700',
+  },
+  methodWrap: {
+    marginTop: 10,
+  },
+  refSpacing: {
+    marginTop: 10,
+  },
+  error: {
+    color: theme.colors.danger,
+    fontSize: 12,
+    marginTop: 6,
+  },
+  createSpacing: {
+    marginTop: 4,
+  },
+  pressed: {
+    opacity: theme.layout.pressedOpacity,
+  },
 });

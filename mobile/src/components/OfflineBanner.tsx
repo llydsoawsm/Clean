@@ -1,24 +1,43 @@
 import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { theme, type MciIconName } from '@/theme';
 
-export function OfflineBanner({ status }: { status: 'online' | 'offline' | 'syncing' | 'pending' | 'synced' | 'failed' }) {
-  const labels: Record<string, { text: string; bg: string; fg: string }> = {
-    online: { text: 'Online', bg: '#dcfce7', fg: '#166534' },
-    offline: { text: 'Offline • Working with local data', bg: '#f1f5f9', fg: '#475569' },
-    syncing: { text: 'Syncing...', bg: '#dbeafe', fg: '#1e40af' },
-    pending: { text: 'Pending changes • Will sync when online', bg: '#fef9c3', fg: '#92400e' },
-    synced: { text: 'All data synced', bg: '#dcfce7', fg: '#166534' },
-    failed: { text: 'Sync failed • Data still saved locally', bg: '#fee2e2', fg: '#991b1b' },
-  };
-  const c = labels[status] ?? labels.offline;
+type BannerStatus = 'online' | 'offline' | 'syncing' | 'pending' | 'synced' | 'failed';
+
+const BANNER_META: Record<BannerStatus, { text: string; bg: string; fg: string; icon: MciIconName }> = {
+  online: { text: 'Online', bg: theme.colors.claimedBg, fg: theme.colors.claimed, icon: 'cloud-check-outline' },
+  offline: { text: 'Offline', bg: theme.colors.surfaceAlt, fg: theme.colors.inkSecondary, icon: 'cloud-off-outline' },
+  syncing: { text: 'Syncing...', bg: theme.colors.brandSoft, fg: theme.colors.brand, icon: 'sync' },
+  pending: { text: 'Unsynced changes', bg: theme.colors.readyBg, fg: theme.colors.ready, icon: 'clock-outline' },
+  synced: { text: 'Synced', bg: theme.colors.claimedBg, fg: theme.colors.claimed, icon: 'cloud-check-outline' },
+  failed: { text: 'Sync paused', bg: theme.colors.dangerBg, fg: theme.colors.danger, icon: 'alert-circle-outline' },
+};
+
+export function OfflineBanner({ status }: { status: BannerStatus }) {
+  const c = BANNER_META[status] ?? BANNER_META.offline;
   return (
     <View style={[styles.banner, { backgroundColor: c.bg }]}>
+      <MaterialCommunityIcons name={c.icon} size={14} color={c.fg} />
       <Text style={[styles.text, { color: c.fg }]}>{c.text}</Text>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  banner: { paddingVertical: 6, paddingHorizontal: 12, borderRadius: 8, alignItems: 'center', marginBottom: 10 },
-  text: { fontSize: 12, fontWeight: '600' },
+  banner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 6,
+    paddingHorizontal: theme.spacing.md,
+    borderRadius: theme.radius.pill,
+    marginBottom: theme.spacing.md,
+    alignSelf: 'center',
+  },
+  text: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
 });

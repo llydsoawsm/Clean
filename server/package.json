@@ -9,8 +9,8 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
     "test": "tsx --test src/tests/api.test.ts",
-    "db:migrate": "tsx ./node_modules/knex/bin/cli.js --knexfile knexfile.ts migrate:latest",
-    "db:rollback": "tsx ./node_modules/knex/bin/cli.js --knexfile knexfile.ts migrate:rollback"
+    "db:migrate": "tsx src/database/migrate.ts latest",
+    "db:rollback": "tsx src/database/migrate.ts rollback"
   },
   "engines": {
     "node": ">=20"

@@ -1,19 +1,26 @@
 import { useCallback, useEffect, useState } from 'react';
-import { FlatList, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { FlatList, Pressable, RefreshControl, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useFocusEffect } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useAuthSession } from '@/context/AuthContext';
 import { initDatabase } from '@/db/client';
 import { searchCustomers } from '@/db/repositories/customers';
+import { runSync } from '@/sync/engine';
 import type { CustomerRow } from '@/db/types';
 import { EmptyState, LoadingState } from '@/components/Feedback';
+import { TabHeader } from '@/components/ScreenHeader';
+import { useBottomNavPadding } from '@/components/BottomTabBar';
+import { HeaderIconButton, SearchBar } from '@/components/ui';
+import { avatarTone, getInitials, theme } from '@/theme';
 
 export default function CustomersScreen() {
   const session = useAuthSession();
+  const bottomNavPadding = useBottomNavPadding();
   const [query, setQuery] = useState('');
   const [customers, setCustomers] = useState<CustomerRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(
     async (searchText: string) => {
@@ -41,83 +48,99 @@ export default function CustomersScreen() {
     void load(query);
   }, [load, query]);
 
-  return (
-    <SafeAreaView style={styles.safeArea}>
-      <View style={styles.header}>
-        <Pressable onPress={() => router.back()} style={styles.backButton}>
-          <Ionicons name="chevron-back" size={20} color="#1d4ed8" />
-          <Text style={styles.backText}>Back</Text>
-        </Pressable>
-        <Text style={styles.title}>Customers</Text>
-        <Pressable onPress={() => router.push('/customer-add' as any)} style={styles.addBtn}>
-          <Ionicons name="add" size={22} color="#1d4ed8" />
-        </Pressable>
-      </View>
+  const handleRefresh = async () => {
+    if (!session || refreshing) return;
+    setRefreshing(true);
+    try {
+      await runSync(session.shop.id, session.token).catch(() => {});
+      await load(query);
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
-      <View style={styles.searchBox}>
-        <TextInput
-          placeholder="Search customer by name or contact"
-          placeholderTextColor="#94a3b8"
+  return (
+    <SafeAreaView style={styles.safeArea} edges={['top']}>
+      <TabHeader
+        title="Customers"
+        count={customers.length}
+        right={
+          <HeaderIconButton
+            icon="plus"
+            onPress={() => router.push('/customer-add' as any)}
+            accessibilityLabel="Add customer"
+          />
+        }
+      />
+
+      <View style={styles.searchWrap}>
+        <SearchBar
           value={query}
           onChangeText={setQuery}
-          style={styles.searchInput}
-          autoCapitalize="none"
+          placeholder="Search name or phone"
+          surface="card"
         />
       </View>
 
       {loading ? (
-        <LoadingState message="Loading customers..." />
+        <LoadingState />
       ) : (
         <FlatList
           data={customers}
           keyExtractor={(item) => item.id}
-          contentContainerStyle={styles.listContent}
+          contentContainerStyle={[styles.listContent, { paddingBottom: bottomNavPadding }]}
           showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={handleRefresh}
+              tintColor={theme.colors.brand}
+              colors={[theme.colors.brand]}
+            />
+          }
           ListEmptyComponent={
             <EmptyState
-              title="No Customers Yet"
-              hint={query.trim() ? 'No matching customers found.' : 'Add your first customer to start receiving laundry.'}
+              icon="account-group-outline"
+              title="No customers"
+              hint={query.trim() ? 'No match found' : 'Add your first customer'}
               actionLabel={!query.trim() ? 'Add Customer' : undefined}
               onAction={!query.trim() ? () => router.push('/customer-add' as any) : undefined}
             />
           }
-          renderItem={({ item }) => (
-            <View style={styles.card}>
+          renderItem={({ item }) => {
+            const tone = avatarTone(item.name);
+            return (
               <Pressable
                 onPress={() => router.push({ pathname: '/customer-detail' as any, params: { id: item.id } })}
-                style={styles.cardMain}
+                style={({ pressed }) => [styles.card, pressed && styles.pressed]}
               >
-                <View style={styles.cardLeft}>
-                  <View style={styles.avatar}>
-                    <Ionicons name="person-outline" size={18} color="#1d4ed8" />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.name}>{item.name}</Text>
-                    {item.contact_number ? <Text style={styles.contact}>{item.contact_number}</Text> : null}
-                    {item.address ? <Text style={styles.address}>{item.address}</Text> : null}
-                  </View>
+                <View style={[styles.avatar, { backgroundColor: tone.bg }]}>
+                  <Text style={[styles.avatarText, { color: tone.fg }]}>{getInitials(item.name)}</Text>
                 </View>
-              </Pressable>
 
-              <View style={styles.cardActions}>
+                <View style={styles.info}>
+                  <Text style={styles.name} numberOfLines={1}>
+                    {item.name}
+                  </Text>
+                  <Text style={styles.meta} numberOfLines={1}>
+                    {item.contact_number}
+                    {item.transaction_count > 0
+                      ? ` · ${item.transaction_count} ${item.transaction_count === 1 ? 'order' : 'orders'}`
+                      : ''}
+                  </Text>
+                </View>
+
                 <Pressable
                   onPress={() => router.push({ pathname: '/receive' as any, params: { customerId: item.id } })}
-                  style={styles.newOrderBtn}
+                  style={({ pressed }) => [styles.quickOrderBtn, pressed && styles.pressed]}
+                  hitSlop={6}
+                  accessibilityLabel={`New drop-off for ${item.name}`}
                 >
-                  <Ionicons name="add-circle-outline" size={14} color="#1d4ed8" />
-                  <Text style={styles.newOrderText}>New Order</Text>
+                  <MaterialCommunityIcons name="plus" size={19} color={theme.colors.brand} />
                 </Pressable>
-
-                <Pressable
-                  onPress={() => router.push({ pathname: '/customer-detail' as any, params: { id: item.id } })}
-                  style={styles.detailsBtn}
-                >
-                  <Text style={styles.detailsText}>Profile</Text>
-                  <Ionicons name="chevron-forward" size={14} color="#64748b" />
-                </Pressable>
-              </View>
-            </View>
-          )}
+              </Pressable>
+            );
+          }}
         />
       )}
     </SafeAreaView>
@@ -125,81 +148,66 @@ export default function CustomersScreen() {
 }
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: '#f8fafc' },
-  header: {
+  safeArea: {
+    flex: 1,
+    backgroundColor: theme.colors.bg,
+  },
+  pressed: {
+    opacity: theme.layout.pressedOpacity,
+  },
+  searchWrap: {
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: theme.spacing.xs,
+    paddingBottom: theme.spacing.sm,
+  },
+  listContent: {
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: theme.spacing.sm,
+  },
+  card: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 18,
-    paddingVertical: 14,
-    backgroundColor: '#ffffff',
-    borderBottomWidth: 1,
-    borderBottomColor: '#e2e8f0',
-  },
-  backButton: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  backText: { color: '#1d4ed8', fontSize: 14, fontWeight: '600' },
-  title: { color: '#0f172a', fontSize: 17, fontWeight: '700' },
-  addBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
-  searchBox: { backgroundColor: '#ffffff', paddingHorizontal: 18, paddingBottom: 10 },
-  searchInput: {
-    backgroundColor: '#f8fafc',
+    gap: 12,
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.lg,
+    padding: theme.layout.listCardPadding,
+    marginBottom: theme.layout.listGap,
     borderWidth: 1,
-    borderColor: '#e2e8f0',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    fontSize: 14,
-    color: '#0f172a',
+    borderColor: theme.colors.border,
+    ...theme.shadow.card,
   },
-  listContent: { padding: 18, paddingBottom: 40 },
-  card: {
-    backgroundColor: '#ffffff',
-    borderRadius: 10,
-    padding: 14,
-    marginBottom: 10,
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-  },
-  cardMain: { marginBottom: 10 },
-  cardLeft: { flexDirection: 'row', alignItems: 'flex-start', gap: 12 },
   avatar: {
-    width: 36,
-    height: 36,
-    borderRadius: 8,
-    backgroundColor: '#eff6ff',
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  avatarText: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  info: {
+    flex: 1,
+  },
+  name: {
+    color: theme.colors.ink,
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  meta: {
+    color: theme.colors.inkMuted,
+    fontSize: 12,
     marginTop: 2,
   },
-  name: { color: '#0f172a', fontSize: 15, fontWeight: '700' },
-  contact: { color: '#1d4ed8', fontSize: 13, marginTop: 2, fontWeight: '500' },
-  address: { color: '#64748b', fontSize: 12, marginTop: 3 },
-  cardActions: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingTop: 10,
-    borderTopWidth: 1,
-    borderTopColor: '#f8fafc',
-  },
-  newOrderBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: '#eff6ff',
-    borderRadius: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+  quickOrderBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: theme.colors.brandSoft,
     borderWidth: 1,
-    borderColor: '#dbeafe',
-  },
-  newOrderText: { color: '#1d4ed8', fontSize: 12, fontWeight: '600' },
-  detailsBtn: {
-    flexDirection: 'row',
+    borderColor: theme.colors.brandBorder,
     alignItems: 'center',
-    gap: 2,
-    paddingHorizontal: 8,
-    paddingVertical: 6,
+    justifyContent: 'center',
   },
-  detailsText: { color: '#64748b', fontSize: 12, fontWeight: '500' },
 });

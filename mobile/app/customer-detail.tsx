@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import {
   Alert,
   KeyboardAvoidingView,
@@ -7,20 +7,34 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { router, useLocalSearchParams } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { initDatabase } from '@/db/client';
 import { deleteCustomer, getCustomerById, updateCustomer } from '@/db/repositories/customers';
+import { listOrders } from '@/db/repositories/orders';
+import type { OrderRow } from '@/db/types';
+import { formatPHP } from '@/utils/money';
 import { LoadingState, EmptyState } from '@/components/Feedback';
+import { ScreenHeader } from '@/components/ScreenHeader';
+import { StatusBadge } from '@/components/StatusBadge';
 import { useToast } from '@/components/Toast';
+import {
+  AppButton,
+  Card,
+  FormField,
+  FormInput,
+  SectionHeader,
+  useScreenBottomPadding,
+} from '@/components/ui';
+import { avatarTone, getInitials, shortTicket, theme } from '@/theme';
 
 export default function CustomerDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const toast = useToast();
+  const bottomPadding = useScreenBottomPadding();
 
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
@@ -30,37 +44,49 @@ export default function CustomerDetailScreen() {
   const [contact, setContact] = useState('');
   const [address, setAddress] = useState('');
   const [notes, setNotes] = useState('');
+  const [recentOrders, setRecentOrders] = useState<OrderRow[]>([]);
+  const initializedIdRef = useRef<string | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      if (!id) {
-        setNotFound(true);
-        setLoading(false);
-        return;
-      }
-      try {
-        await initDatabase();
-        const customer = await getCustomerById(id);
-        if (cancelled) return;
-        if (!customer) {
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      (async () => {
+        if (!id) {
           setNotFound(true);
-        } else {
-          setName(customer.name);
-          setContact(customer.contact_number);
-          setAddress(customer.address ?? '');
-          setNotes(customer.notes ?? '');
+          setLoading(false);
+          return;
         }
-      } catch {
-        if (!cancelled) setNotFound(true);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [id]);
+        try {
+          await initDatabase();
+          const [customer, orders] = await Promise.all([
+            getCustomerById(id),
+            listOrders({ customer_id: id, limit: 5 }),
+          ]);
+          if (cancelled) return;
+          if (!customer) {
+            setNotFound(true);
+          } else {
+            setNotFound(false);
+            if (initializedIdRef.current !== id) {
+              setName(customer.name);
+              setContact(customer.contact_number);
+              setAddress(customer.address ?? '');
+              setNotes(customer.notes ?? '');
+              initializedIdRef.current = id;
+            }
+            setRecentOrders(orders);
+          }
+        } catch {
+          if (!cancelled) setNotFound(true);
+        } finally {
+          if (!cancelled) setLoading(false);
+        }
+      })();
+      return () => {
+        cancelled = true;
+      };
+    }, [id])
+  );
 
   const handleSave = async () => {
     if (!id) return;
@@ -69,7 +95,7 @@ export default function CustomerDetailScreen() {
       return;
     }
     if (!contact.trim()) {
-      Alert.alert('Required', 'Contact number is required.');
+      Alert.alert('Required', 'Phone number is required.');
       return;
     }
 
@@ -92,10 +118,10 @@ export default function CustomerDetailScreen() {
 
   const handleDelete = () => {
     if (!id) return;
-    Alert.alert('Delete Customer', `Are you sure you want to remove ${name}? Historical orders will be preserved.`, [
+    Alert.alert('Remove Customer', `Remove ${name}? Past orders stay saved.`, [
       { text: 'Cancel', style: 'cancel' },
       {
-        text: 'Delete',
+        text: 'Remove',
         style: 'destructive',
         onPress: async () => {
           try {
@@ -103,7 +129,7 @@ export default function CustomerDetailScreen() {
             toast.show('Customer removed', 'info');
             router.back();
           } catch (e) {
-            Alert.alert('Delete Failed', e instanceof Error ? e.message : 'Unable to delete customer.');
+            Alert.alert('Error', e instanceof Error ? e.message : 'Unable to remove customer.');
           }
         },
       },
@@ -118,74 +144,136 @@ export default function CustomerDetailScreen() {
 
   if (loading) {
     return (
-      <SafeAreaView style={styles.safeArea}>
-        <LoadingState message="Loading customer..." />
+      <SafeAreaView style={styles.safeArea} edges={['top']}>
+        <ScreenHeader title="Customer" />
+        <LoadingState />
       </SafeAreaView>
     );
   }
 
   if (notFound) {
     return (
-      <SafeAreaView style={styles.safeArea}>
-        <View style={styles.header}>
-          <Pressable onPress={() => router.back()} style={styles.backButton}>
-            <Ionicons name="chevron-back" size={20} color="#1d4ed8" />
-            <Text style={styles.backText}>Back</Text>
-          </Pressable>
-          <Text style={styles.title}>Customer Profile</Text>
-          <View style={{ width: 50 }} />
-        </View>
-        <EmptyState title="Customer Not Found" hint="This customer may have been removed." />
+      <SafeAreaView style={styles.safeArea} edges={['top']}>
+        <ScreenHeader title="Customer" />
+        <EmptyState icon="account-group-outline" title="Customer not found" />
       </SafeAreaView>
     );
   }
 
+  const tone = avatarTone(name);
+
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView style={styles.safeArea} edges={['top']}>
+      <ScreenHeader title="Customer" />
+
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
-        <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-          <View style={styles.header}>
-            <Pressable onPress={() => router.back()} style={styles.backButton}>
-              <Ionicons name="chevron-back" size={20} color="#1d4ed8" />
-              <Text style={styles.backText}>Back</Text>
-            </Pressable>
-            <Text style={styles.title}>Customer Profile</Text>
-            <View style={{ width: 50 }} />
-          </View>
+        <ScrollView
+          contentContainerStyle={[styles.container, { paddingBottom: bottomPadding }]}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          {/* Profile Hero Card */}
+          <Card>
+            <View style={styles.profileTop}>
+              <View style={[styles.avatar, { backgroundColor: tone.bg }]}>
+                <Text style={[styles.avatarText, { color: tone.fg }]}>{getInitials(name)}</Text>
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.profileName} numberOfLines={1}>
+                  {name}
+                </Text>
+                <Text style={styles.profilePhone}>{contact}</Text>
+              </View>
+            </View>
 
-          <View style={styles.card}>
-            <Pressable onPress={handleCreateOrder} style={styles.orderActionBtn}>
-              <Ionicons name="add-circle" size={18} color="#ffffff" />
-              <Text style={styles.orderActionText}>New Laundry Order for {name.split(' ')[0]}</Text>
-            </Pressable>
-
-            <Text style={styles.label}>Name *</Text>
-            <TextInput style={styles.input} value={name} onChangeText={setName} />
-
-            <Text style={styles.label}>Contact Number *</Text>
-            <TextInput
-              style={styles.input}
-              value={contact}
-              onChangeText={setContact}
-              keyboardType="phone-pad"
-              placeholder="0917-000-0000"
-              placeholderTextColor="#94a3b8"
+            <AppButton
+              variant="soft"
+              size="md"
+              icon="plus"
+              label="New Drop-off"
+              onPress={handleCreateOrder}
             />
+          </Card>
 
-            <Text style={styles.label}>Address (Optional)</Text>
-            <TextInput style={styles.input} value={address} onChangeText={setAddress} />
+          {/* Edit Details Card */}
+          <Card>
+            <SectionHeader title="Details" />
 
-            <Text style={styles.label}>Notes</Text>
-            <TextInput style={[styles.input, styles.multiline]} value={notes} onChangeText={setNotes} multiline />
+            <FormField label="Name" first>
+              <FormInput value={name} onChangeText={setName} />
+            </FormField>
 
-            <Pressable onPress={handleSave} disabled={saving} style={[styles.button, saving && styles.buttonDisabled]}>
-              <Text style={styles.buttonText}>{saving ? 'Saving...' : 'Save Changes'}</Text>
-            </Pressable>
+            <FormField label="Phone">
+              <FormInput
+                value={contact}
+                onChangeText={setContact}
+                keyboardType="phone-pad"
+                placeholder="0917-000-0000"
+              />
+            </FormField>
 
-            <Pressable onPress={handleDelete} style={styles.deleteButton}>
-              <Text style={styles.deleteText}>Delete Customer</Text>
-            </Pressable>
-          </View>
+            <FormField label="Address">
+              <FormInput
+                value={address}
+                onChangeText={setAddress}
+                placeholder="Street or Barangay"
+              />
+            </FormField>
+
+            <FormField label="Notes">
+              <FormInput
+                value={notes}
+                onChangeText={setNotes}
+                multiline
+                placeholder="Preferences..."
+              />
+            </FormField>
+
+            <AppButton
+              variant="primary"
+              label={saving ? 'Saving...' : 'Save'}
+              onPress={handleSave}
+              loading={saving}
+              style={styles.submitBtn}
+            />
+          </Card>
+
+          {/* Recent Orders */}
+          {recentOrders.length > 0 ? (
+            <Card>
+              <SectionHeader title="Recent Orders" style={styles.compactHeader} />
+              {recentOrders.map((ord, idx) => (
+                <Pressable
+                  key={ord.id}
+                  onPress={() => router.push({ pathname: '/order-detail' as any, params: { id: ord.id } })}
+                  style={({ pressed }) => [
+                    styles.orderRow,
+                    idx > 0 && styles.orderDivider,
+                    pressed && styles.rowPressed,
+                  ]}
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.orderTitle}>
+                      {shortTicket(ord.order_number)} · {ord.service_name_snapshot}
+                    </Text>
+                    <Text style={styles.orderPrice}>{formatPHP(ord.total_centavos)}</Text>
+                  </View>
+                  <View style={styles.orderRight}>
+                    <StatusBadge type="order" value={ord.status} />
+                    <MaterialCommunityIcons name="chevron-right" size={18} color={theme.colors.inkMuted} />
+                  </View>
+                </Pressable>
+              ))}
+            </Card>
+          ) : null}
+
+          <AppButton
+            variant="dangerSoft"
+            size="md"
+            icon="trash-can-outline"
+            label="Remove customer"
+            onPress={handleDelete}
+          />
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -193,46 +281,75 @@ export default function CustomerDetailScreen() {
 }
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: '#f8fafc' },
-  container: { padding: 18, paddingBottom: 40 },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 },
-  backButton: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  backText: { color: '#1d4ed8', fontSize: 14, fontWeight: '600' },
-  title: { color: '#0f172a', fontSize: 17, fontWeight: '700' },
-  card: { backgroundColor: '#ffffff', borderRadius: 12, padding: 16, borderWidth: 1, borderColor: '#e2e8f0' },
-  orderActionBtn: {
-    backgroundColor: '#1d4ed8',
-    borderRadius: 8,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
+  safeArea: {
+    flex: 1,
+    backgroundColor: theme.colors.bg,
+  },
+  container: {
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: theme.spacing.sm,
+  },
+  profileTop: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    marginBottom: 14,
+    gap: 12,
+    marginBottom: theme.spacing.md,
   },
-  orderActionText: { color: '#ffffff', fontSize: 14, fontWeight: '600' },
-  label: { color: '#64748b', fontSize: 12, fontWeight: '500', marginBottom: 6, marginTop: 10 },
-  input: {
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 14,
-    backgroundColor: '#f8fafc',
-    color: '#0f172a',
-  },
-  multiline: { minHeight: 60, textAlignVertical: 'top' },
-  button: {
-    backgroundColor: '#1d4ed8',
-    borderRadius: 8,
-    paddingVertical: 13,
+  avatar: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
     alignItems: 'center',
-    marginTop: 18,
+    justifyContent: 'center',
   },
-  buttonDisabled: { opacity: 0.6 },
-  buttonText: { color: '#ffffff', fontSize: 15, fontWeight: '600' },
-  deleteButton: { marginTop: 12, paddingVertical: 10, alignItems: 'center' },
-  deleteText: { color: '#dc2626', fontSize: 13, fontWeight: '500' },
+  avatarText: {
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  profileName: {
+    color: theme.colors.ink,
+    fontSize: 17,
+    fontWeight: '800',
+  },
+  profilePhone: {
+    color: theme.colors.inkMuted,
+    fontSize: 13,
+    marginTop: 2,
+  },
+  submitBtn: {
+    marginTop: theme.spacing.xl,
+  },
+  compactHeader: {
+    marginBottom: 4,
+  },
+  orderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 10,
+    gap: 10,
+  },
+  orderDivider: {
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.divider,
+  },
+  rowPressed: {
+    backgroundColor: theme.colors.surfaceWarm,
+  },
+  orderTitle: {
+    color: theme.colors.ink,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  orderPrice: {
+    color: theme.colors.inkMuted,
+    fontSize: 12,
+    marginTop: 2,
+    fontVariant: ['tabular-nums'],
+  },
+  orderRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
 });

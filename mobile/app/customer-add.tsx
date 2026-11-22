@@ -1,88 +1,123 @@
 import { useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View, Alert } from 'react-native';
+import {
+  Alert,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { customerStore } from '@/store/customerStore';
+import { useAuthSession } from '@/context/AuthContext';
+import { initDatabase } from '@/db/client';
+import { createCustomer } from '@/db/repositories/customers';
+import { useToast } from '@/components/Toast';
 
 export default function CustomerAddScreen() {
+  const session = useAuthSession();
+  const toast = useToast();
   const [name, setName] = useState('');
   const [contact, setContact] = useState('');
   const [address, setAddress] = useState('');
   const [notes, setNotes] = useState('');
+  const [saving, setSaving] = useState(false);
 
-  const handleSave = () => {
+  const handleSave = async () => {
+    if (!session) {
+      Alert.alert('Session Required', 'Please log in first.');
+      return;
+    }
     if (!name.trim()) {
       Alert.alert('Required', 'Please enter customer name.');
       return;
     }
+    if (!contact.trim()) {
+      Alert.alert('Required', 'Please enter a valid contact number.');
+      return;
+    }
 
-    customerStore.add({
-      name: name.trim(),
-      contact_number: contact.trim() || undefined,
-      address: address.trim() || undefined,
-      notes: notes.trim() || undefined,
-    });
-
-    router.back();
+    setSaving(true);
+    try {
+      await initDatabase();
+      await createCustomer({
+        shop_id: session.shop.id,
+        name: name.trim(),
+        contact_number: contact.trim(),
+        address: address.trim() || null,
+        notes: notes.trim() || null,
+      });
+      toast.show('Customer saved', 'success');
+      router.back();
+    } catch (e) {
+      Alert.alert('Cannot Save Customer', e instanceof Error ? e.message : 'Unable to save customer.');
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-        <View style={styles.header}>
-          <Pressable onPress={() => router.back()} style={styles.backButton}>
-            <Ionicons name="chevron-back" size={20} color="#1d4ed8" />
-            <Text style={styles.backText}>Back</Text>
-          </Pressable>
-          <Text style={styles.title}>Add Customer</Text>
-          <View style={{ width: 50 }} />
-        </View>
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
+        <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+          <View style={styles.header}>
+            <Pressable onPress={() => router.back()} style={styles.backButton}>
+              <Ionicons name="chevron-back" size={20} color="#1d4ed8" />
+              <Text style={styles.backText}>Back</Text>
+            </Pressable>
+            <Text style={styles.title}>Add Customer</Text>
+            <View style={{ width: 50 }} />
+          </View>
 
-        <View style={styles.card}>
-          <Text style={styles.label}>Customer Name *</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="Full name"
-            placeholderTextColor="#94a3b8"
-            value={name}
-            onChangeText={setName}
-          />
+          <View style={styles.card}>
+            <Text style={styles.label}>Customer Name *</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="Full name"
+              placeholderTextColor="#94a3b8"
+              value={name}
+              onChangeText={setName}
+            />
 
-          <Text style={styles.label}>Contact Number (Optional)</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="0917-000-0000 (Optional)"
-            placeholderTextColor="#94a3b8"
-            value={contact}
-            onChangeText={setContact}
-            keyboardType="phone-pad"
-          />
+            <Text style={styles.label}>Contact Number *</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="0917-000-0000"
+              placeholderTextColor="#94a3b8"
+              value={contact}
+              onChangeText={setContact}
+              keyboardType="phone-pad"
+            />
 
-          <Text style={styles.label}>Address (Optional)</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="Street or Barangay"
-            placeholderTextColor="#94a3b8"
-            value={address}
-            onChangeText={setAddress}
-          />
+            <Text style={styles.label}>Address (Optional)</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="Street or Barangay"
+              placeholderTextColor="#94a3b8"
+              value={address}
+              onChangeText={setAddress}
+            />
 
-          <Text style={styles.label}>Notes</Text>
-          <TextInput
-            style={[styles.input, styles.multiline]}
-            placeholder="Preferences, special instructions..."
-            placeholderTextColor="#94a3b8"
-            value={notes}
-            onChangeText={setNotes}
-            multiline
-          />
+            <Text style={styles.label}>Notes</Text>
+            <TextInput
+              style={[styles.input, styles.multiline]}
+              placeholder="Preferences, special instructions..."
+              placeholderTextColor="#94a3b8"
+              value={notes}
+              onChangeText={setNotes}
+              multiline
+            />
 
-          <Pressable onPress={handleSave} style={styles.button}>
-            <Text style={styles.buttonText}>Save Customer</Text>
-          </Pressable>
-        </View>
-      </ScrollView>
+            <Pressable onPress={handleSave} disabled={saving} style={[styles.button, saving && styles.buttonDisabled]}>
+              <Text style={styles.buttonText}>{saving ? 'Saving...' : 'Save Customer'}</Text>
+            </Pressable>
+          </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -114,5 +149,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginTop: 20,
   },
+  buttonDisabled: { opacity: 0.6 },
   buttonText: { color: '#ffffff', fontSize: 15, fontWeight: '600' },
 });

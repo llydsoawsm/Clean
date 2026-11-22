@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { randomUUID } from 'node:crypto';
+import type { Knex } from 'knex';
 import { database } from '../../database/knex';
 import { authMiddleware, type AuthenticatedRequest } from '../../middleware/auth';
 import { createOrderSchema } from './orders.schemas';
@@ -10,9 +11,11 @@ ordersRouter.use(authMiddleware);
 function nowIso(): string {
   return new Date().toISOString();
 }
+
 function toCentavos(pesos: number): number {
   return Math.round(pesos * 100);
 }
+
 function calcBase(
   pricingType: string,
   unitPriceCents: number,
@@ -36,11 +39,13 @@ function calcBase(
   }
   return unitPriceCents; // FIXED
 }
+
 function derivePaymentStatus(total: number, paid: number): string {
   if (paid <= 0) return 'UNPAID';
   if (paid >= total) return 'PAID';
   return 'PARTIAL';
 }
+
 function orderPrefix(): string {
   const d = new Date();
   const y = d.getFullYear();
@@ -48,16 +53,32 @@ function orderPrefix(): string {
   const day = String(d.getDate()).padStart(2, '0');
   return `CLN-${y}${m}${day}`;
 }
-async function generateOrderNumber(shopId: string, trx: any): Promise<string> {
+
+async function generateOrderNumber(shopId: string, trx: Knex.Transaction): Promise<string> {
   const prefix = orderPrefix();
-  const row = (await trx('orders')
+  const rows = (await trx('orders')
     .where('shop_id', shopId)
     .where('order_number', 'like', `${prefix}-%`)
-    .count('id as count')
-    .first()) as unknown as { count: number | string } | undefined;
-  const cnt = Number((row as unknown as { count: number })?.count ?? 0);
-  const next = cnt + 1;
-  return `${prefix}-${String(next).padStart(4, '0')}`;
+    .select('order_number')) as { order_number: string }[];
+
+  let maxSeq = 0;
+  const existing = new Set<string>();
+  for (const r of rows) {
+    existing.add(r.order_number);
+    const match = r.order_number.slice(prefix.length + 1).match(/^(\d+)/);
+    if (match) {
+      const seq = parseInt(match[1], 10);
+      if (seq > maxSeq) maxSeq = seq;
+    }
+  }
+
+  let next = maxSeq + 1;
+  let candidate = `${prefix}-${String(next).padStart(4, '0')}`;
+  while (existing.has(candidate)) {
+    next += 1;
+    candidate = `${prefix}-${String(next).padStart(4, '0')}`;
+  }
+  return candidate;
 }
 
 // GET /api/v1/orders?status=RECEIVED&search=&limit=20
@@ -102,7 +123,6 @@ ordersRouter.get('/:id', async (req: AuthenticatedRequest, res, next) => {
     }
     const payments = await database('payments').where({ order_id: id, is_deleted: 0 }).orderBy('created_at', 'asc');
     const history = await database('order_status_history').where({ order_id: id }).orderBy('changed_at', 'asc');
-    // also fetch customer contact for convenience
     const customer = await database('customers').where({ id: order.customer_id }).first();
     res.json({ success: true, data: { order, payments, history, customer } });
   } catch (e) {
@@ -113,7 +133,6 @@ ordersRouter.get('/:id', async (req: AuthenticatedRequest, res, next) => {
 ordersRouter.post('/', async (req: AuthenticatedRequest, res, next) => {
   try {
     const shopId = req.auth!.shopId;
-    // coerce numeric strings
     for (const k of ['weight_kg', 'weight_grams', 'quantity', 'additional_fee', 'rush_fee', 'amount_paid', 'additional_fee_centavos', 'rush_fee_centavos', 'amount_paid_centavos']) {
       if (typeof req.body[k] === 'string' && req.body[k] !== '') req.body[k] = parseFloat(req.body[k]);
     }
@@ -125,7 +144,6 @@ ordersRouter.post('/', async (req: AuthenticatedRequest, res, next) => {
     }
     const data = parsed.data;
 
-    // Fetch customer and service with shop scoping
     const customer = await database('customers').where({ id: data.customer_id, shop_id: shopId, is_deleted: 0 }).first();
     if (!customer) {
       res.status(400).json({ success: false, error: { code: 'INVALID_CUSTOMER', message: 'Customer not found or not owned by shop' } });
@@ -141,10 +159,9 @@ ordersRouter.post('/', async (req: AuthenticatedRequest, res, next) => {
       return;
     }
 
-    const pricingType = (service.pricing_type as string).toUpperCase(); // PER_KG etc, normalize
+    const pricingType = (service.pricing_type as string).toUpperCase();
     const unitPriceCents = service.price_centavos as number;
 
-    // Resolve weight_grams / quantity and weight block for PER_LOAD
     let weightGrams: number | null = null;
     let quantity: number | null = null;
     let weightBlockSnapshot: number | null = null;
@@ -178,11 +195,8 @@ ordersRouter.post('/', async (req: AuthenticatedRequest, res, next) => {
         return;
       }
       quantity = data.quantity as number;
-    } else {
-      // FIXED: weight/quantity not required
     }
 
-    // Fees: prefer centavos if provided, else pesos
     let additionalCents = 0;
     if (data.additional_fee_centavos != null) additionalCents = data.additional_fee_centavos;
     else if (data.additional_fee != null) additionalCents = toCentavos(data.additional_fee);
@@ -210,7 +224,7 @@ ordersRouter.post('/', async (req: AuthenticatedRequest, res, next) => {
     const now = nowIso();
     const id = randomUUID();
 
-    let createdOrder: any = null;
+    let createdOrder: Record<string, unknown> | undefined;
 
     await database.transaction(async (trx) => {
       const orderNumber = await generateOrderNumber(shopId, trx);
@@ -241,6 +255,7 @@ ordersRouter.post('/', async (req: AuthenticatedRequest, res, next) => {
         received_at: now,
         created_at: now,
         updated_at: now,
+        server_updated_at: now,
         is_deleted: 0,
       });
 
@@ -251,6 +266,7 @@ ordersRouter.post('/', async (req: AuthenticatedRequest, res, next) => {
         to_status: 'RECEIVED',
         changed_at: now,
         changed_by: req.auth!.userId,
+        server_updated_at: now,
       });
 
       if (paidCents > 0) {
@@ -262,6 +278,7 @@ ordersRouter.post('/', async (req: AuthenticatedRequest, res, next) => {
           method: 'cash',
           created_at: now,
           updated_at: now,
+          server_updated_at: now,
           is_deleted: 0,
         });
       }
@@ -285,6 +302,7 @@ const VALID_TRANSITIONS: Record<string, string[]> = {
   READY: ['COMPLETED'],
   COMPLETED: [],
 };
+
 ordersRouter.patch('/:id/status', async (req: AuthenticatedRequest, res, next) => {
   try {
     const shopId = req.auth!.shopId;
@@ -309,7 +327,6 @@ ordersRouter.patch('/:id/status', async (req: AuthenticatedRequest, res, next) =
       return;
     }
 
-    // Balance check for COMPLETED: must be 0
     if (nextStatus === 'COMPLETED' && order.balance_centavos > 0) {
       res.status(400).json({
         success: false,
@@ -324,6 +341,7 @@ ordersRouter.patch('/:id/status', async (req: AuthenticatedRequest, res, next) =
       const updates: Record<string, unknown> = {
         status: nextStatus,
         updated_at: now,
+        server_updated_at: now,
       };
       if (nextStatus === 'PROCESSING' && !order.processing_at) updates.processing_at = now;
       if (nextStatus === 'READY') updates.ready_at = now;
@@ -338,6 +356,7 @@ ordersRouter.patch('/:id/status', async (req: AuthenticatedRequest, res, next) =
         to_status: nextStatus,
         changed_at: now,
         changed_by: req.auth!.userId,
+        server_updated_at: now,
       });
     });
 
@@ -349,9 +368,7 @@ ordersRouter.patch('/:id/status', async (req: AuthenticatedRequest, res, next) =
   }
 });
 
-// --- Milestone 60%: Commented out order payments sub-route ---
-/*
-// POST /api/v1/orders/:id/payments — add payment, recalc (Phase 7: method/reference/notes)
+// POST /api/v1/orders/:id/payments — add payment, recalc (method/reference/notes)
 ordersRouter.post('/:id/payments', async (req: AuthenticatedRequest, res, next) => {
   try {
     const shopId = req.auth!.shopId;
@@ -362,28 +379,33 @@ ordersRouter.post('/:id/payments', async (req: AuthenticatedRequest, res, next) 
     else if (typeof req.body.amount === 'string' && req.body.amount !== '') amountCents = toCentavos(parseFloat(req.body.amount));
     else if (typeof req.body.amount_centavos === 'string' && req.body.amount_centavos !== '') amountCents = parseInt(req.body.amount_centavos as string, 10);
 
-    if (amountCents == null || isNaN(amountCents)) {
+    if (amountCents == null || !Number.isFinite(amountCents)) {
       res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'amount is required' } });
       return;
     }
+    amountCents = Math.round(amountCents);
     if (amountCents <= 0) {
       res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Payment must be > 0' } });
       return;
     }
 
-    // Payment method handling (Phase 7)
-    const rawMethod = typeof req.body.method === 'string' ? req.body.method.trim().toUpperCase() : typeof req.body.payment_method === 'string' ? req.body.payment_method.trim().toUpperCase() : 'CASH';
-    const method = ['CASH', 'GCASH', 'OTHER'].includes(rawMethod) ? rawMethod.toLowerCase() : 'cash';
-    // Normalize to lowercase for storage, accept CASH/GCASH/OTHER case-insensitive
-    const validatedMethod = ['cash', 'gcash', 'other'].includes(method) ? method : 'cash';
+    const rawMethod =
+      typeof req.body.method === 'string'
+        ? req.body.method.trim().toUpperCase()
+        : typeof req.body.payment_method === 'string'
+          ? req.body.payment_method.trim().toUpperCase()
+          : 'CASH';
+    const validatedMethod = ['CASH', 'GCASH', 'OTHER'].includes(rawMethod) ? rawMethod.toLowerCase() : 'cash';
 
     const referenceRaw = typeof req.body.reference === 'string' ? req.body.reference.trim() : '';
     const reference = referenceRaw ? referenceRaw.slice(0, 100) : null;
-    const notesRaw = typeof req.body.notes === 'string' ? req.body.notes.trim() : typeof req.body.payment_notes === 'string' ? req.body.payment_notes.trim() : '';
+    const notesRaw =
+      typeof req.body.notes === 'string'
+        ? req.body.notes.trim()
+        : typeof req.body.payment_notes === 'string'
+          ? req.body.payment_notes.trim()
+          : '';
     const notes = notesRaw ? notesRaw.slice(0, 500) : null;
-
-    // reference not required for cash, optional for gcash/other — no hard require, but trim
-    // Do not store sensitive data beyond reference/notes
 
     const order = await database('orders').where({ id, shop_id: shopId, is_deleted: 0 }).first();
     if (!order) {
@@ -413,23 +435,24 @@ ordersRouter.post('/:id/payments', async (req: AuthenticatedRequest, res, next) 
         notes,
         created_at: now,
         updated_at: now,
+        server_updated_at: now,
         is_deleted: 0,
       });
 
-      // recalc order paid/balance/status
-      const sumRow = (await trx('payments').where({ order_id: id, is_deleted: 0 }).sum('amount_centavos as total').first()) as unknown as { total: number | string } | undefined;
+      const sumRow = (await trx('payments')
+        .where({ order_id: id, is_deleted: 0 })
+        .sum('amount_centavos as total')
+        .first()) as unknown as { total: number | string | null } | undefined;
       const paid = Number(sumRow?.total ?? 0);
-      const balance = order.total_amount_centavos - paid;
-      let paymentStatus: string = 'UNPAID';
-      if (paid <= 0) paymentStatus = 'UNPAID';
-      else if (paid >= order.total_amount_centavos) paymentStatus = 'PAID';
-      else paymentStatus = 'PARTIAL';
+      const balance = Math.max(0, order.total_amount_centavos - paid);
+      const paymentStatus = derivePaymentStatus(order.total_amount_centavos, paid);
 
       await trx('orders').where({ id }).update({
         amount_paid_centavos: paid,
         balance_centavos: balance,
         payment_status: paymentStatus,
         updated_at: now,
+        server_updated_at: now,
       });
     });
 
@@ -441,7 +464,6 @@ ordersRouter.post('/:id/payments', async (req: AuthenticatedRequest, res, next) 
     next(e);
   }
 });
-*/
 
 ordersRouter.delete('/:id', async (req: AuthenticatedRequest, res, next) => {
   try {
@@ -456,8 +478,8 @@ ordersRouter.delete('/:id', async (req: AuthenticatedRequest, res, next) => {
       res.json({ success: true, data: { order: existing } });
       return;
     }
-    // Preserve financial history: soft-delete, do not hard-delete payments/history
-    await database('orders').where({ id }).update({ is_deleted: 1, updated_at: nowIso() });
+    const now = nowIso();
+    await database('orders').where({ id }).update({ is_deleted: 1, updated_at: now, server_updated_at: now });
     const updated = await database('orders').where({ id }).first();
     res.json({ success: true, data: { order: updated } });
   } catch (e) {

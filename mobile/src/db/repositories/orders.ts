@@ -29,13 +29,27 @@ function orderNumberForToday(): string {
 
 async function generateOrderNumber(shopId: string | null, db: ReturnType<typeof getDatabase>): Promise<string> {
   const prefix = orderNumberForToday();
-  // count today for this shop to generate sequence
-  const row = await db.getFirstAsync<{ cnt: number }>(
-    `SELECT COUNT(*) as cnt FROM orders WHERE order_number LIKE ? AND (shop_id IS ? OR shop_id = ?);`,
+  const rows = await db.getAllAsync<{ order_number: string }>(
+    `SELECT order_number FROM orders WHERE order_number LIKE ? AND (shop_id IS ? OR shop_id = ?);`,
     [`${prefix}-%`, shopId, shopId]
   );
-  const next = (row?.cnt ?? 0) + 1;
-  return `${prefix}-${String(next).padStart(4, '0')}`;
+  let maxSeq = 0;
+  const existing = new Set<string>();
+  for (const r of rows) {
+    existing.add(r.order_number);
+    const match = r.order_number.slice(prefix.length + 1).match(/^(\d+)/);
+    if (match) {
+      const seq = parseInt(match[1], 10);
+      if (seq > maxSeq) maxSeq = seq;
+    }
+  }
+  let next = maxSeq + 1;
+  let candidate = `${prefix}-${String(next).padStart(4, '0')}`;
+  while (existing.has(candidate)) {
+    next += 1;
+    candidate = `${prefix}-${String(next).padStart(4, '0')}`;
+  }
+  return candidate;
 }
 
 export interface CreateOrderInput {
@@ -53,6 +67,8 @@ export interface CreateOrderInput {
   rush_fee_centavos?: number;
   is_rush?: boolean;
   amount_paid_centavos?: number;
+  payment_method?: 'CASH' | 'GCASH' | 'OTHER';
+  payment_reference?: string | null;
   notes?: string | null;
   estimated_ready_at?: string | null;
 }
@@ -150,10 +166,12 @@ export async function createOrder(input: CreateOrderInput): Promise<OrderRow> {
     // If paid > 0, create payment row
     if (paid > 0) {
       const payId = uuidv4();
+      const payMethod = (input.payment_method ?? 'CASH').toLowerCase();
+      const payRef = input.payment_reference?.trim() ? input.payment_reference.trim().slice(0, 100) : null;
       await db.runAsync(
-        `INSERT INTO payments (id, order_id, shop_id, amount_centavos, method, created_at, updated_at, sync_status, last_synced_at, is_deleted)
-       VALUES (?, ?, ?, ?, 'cash', ?, ?, 'PENDING', NULL, 0);`,
-        [payId, id, input.shop_id ?? null, paid, now, now]
+        `INSERT INTO payments (id, order_id, shop_id, amount_centavos, method, reference, notes, created_at, updated_at, sync_status, last_synced_at, is_deleted)
+       VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, 'PENDING', NULL, 0);`,
+        [payId, id, input.shop_id ?? null, paid, payMethod, payRef, now, now]
       );
     }
 

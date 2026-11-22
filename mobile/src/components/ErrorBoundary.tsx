@@ -2,26 +2,29 @@ import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 type Props = { children: React.ReactNode };
-type State = { hasError: boolean; error?: Error };
+type State = { hasError: boolean };
 
 export class ErrorBoundary extends React.Component<Props, State> {
   constructor(props: Props) {
     super(props);
     this.state = { hasError: false };
   }
-  static getDerivedStateFromError(error: Error): State {
-    return { hasError: true, error };
+
+  static getDerivedStateFromError(): State {
+    return { hasError: true };
   }
+
   componentDidCatch(error: Error) {
     console.error('[Clean] UI error', error);
   }
+
   render() {
     if (this.state.hasError) {
       return (
         <View style={styles.container}>
           <Text style={styles.title}>Something went wrong</Text>
-          <Text style={styles.message}>{this.state.error?.message ?? 'Unexpected error'}</Text>
-          <Text style={styles.note}>Your local data is safe. Please restart the app or go back.</Text>
+          <Text style={styles.message}>An unexpected error occurred while displaying this screen.</Text>
+          <Text style={styles.note}>Your local data is safe. Working offline is supported.</Text>
           <Pressable onPress={() => this.setState({ hasError: false })} style={styles.button}>
             <Text style={styles.buttonText}>Try Again</Text>
           </Pressable>

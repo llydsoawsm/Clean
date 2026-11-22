@@ -64,6 +64,19 @@ async function post<T>(path: string, body: unknown, token?: string): Promise<T> 
   });
 }
 
+async function patch<T>(path: string, body: unknown, token?: string): Promise<T> {
+  const headers: Record<string, string> = {
+    Accept: 'application/json',
+    'Content-Type': 'application/json',
+  };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  return request<T>(path, {
+    method: 'PATCH',
+    headers,
+    body: JSON.stringify(body),
+  });
+}
+
 function getErrorMessage(body: unknown): string {
   if (typeof body !== 'object' || body === null) return 'The server returned an error.';
   const error = (body as { error?: unknown }).error;
@@ -81,11 +94,33 @@ export const api = {
     post<AuthResponse>('auth/register', data),
   login: (data: { email: string; password: string }) => post<AuthResponse>('auth/login', data),
   getShopMe: (token: string) => get<ShopMeResponse>('shops/me', token),
-  syncPush: (payload: { customers?: any[]; services?: any[]; orders?: any[]; payments?: any[]; statusHistory?: any[] }, token: string) =>
+  updateShopMe: (
+    data: {
+      name?: string;
+      owner_name?: string | null;
+      contact_number?: string | null;
+      address?: string | null;
+      rush_fee_centavos?: number;
+    },
+    token: string
+  ) => patch<ShopMeResponse>('shops/me', data, token),
+  syncPush: (
+    payload: { customers?: any[]; services?: any[]; orders?: any[]; payments?: any[]; statusHistory?: any[] },
+    token: string
+  ) =>
     post<{ success: boolean; data: { results: Record<string, any[]>; pushedAt: string } }>('sync/push', payload, token),
   syncPull: (since: string, token: string, limit?: number) =>
-    get<{ success: boolean; data: { customers: any[]; services: any[]; orders: any[]; payments: any[]; statusHistory: any[]; nextCursor: string; pulledAt: string } }>(
-      `sync/pull?since=${encodeURIComponent(since)}${limit ? `&limit=${limit}` : ''}`,
-      token
-    ),
+    get<{
+      success: boolean;
+      data: {
+        customers: any[];
+        services: any[];
+        orders: any[];
+        payments: any[];
+        statusHistory: any[];
+        nextCursor: string;
+        hasMore?: boolean;
+        pulledAt: string;
+      };
+    }>(`sync/pull?since=${encodeURIComponent(since)}${limit ? `&limit=${limit}` : ''}`, token),
 };

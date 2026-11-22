@@ -1,5 +1,5 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
-import { api, ApiError } from '@/services/api';
+import { api } from '@/services/api';
 import {
   getAuthSession,
   setAuthSession,
@@ -9,7 +9,6 @@ import {
 } from '@/store/authStorage';
 import { initDatabase } from '@/db/client';
 import { upsertShop } from '@/db/repositories/shop';
-import type { AuthShop, AuthUser } from '@/types/auth';
 
 export type AuthState =
   | { status: 'loading' }
@@ -22,6 +21,13 @@ interface AuthContextValue {
   register: (data: { shopName: string; ownerName: string; email: string; password: string }) => Promise<void>;
   logout: () => Promise<void>;
   refreshShop: () => Promise<void>;
+  updateShop: (patch: {
+    name?: string;
+    owner_name?: string | null;
+    contact_number?: string | null;
+    address?: string | null;
+    rush_fee_centavos?: number;
+  }) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
@@ -34,7 +40,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     let cancelled = false;
     (async () => {
       try {
-        // Ensure local DB ready first (for shop cache)
         await initDatabase().catch(() => {});
 
         const cached = await getAuthSession();
@@ -43,17 +48,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           return;
         }
 
-        // If token expired, clear and require online login
         if (isTokenExpired(cached.token)) {
           if (!cancelled) setState({ status: 'unauthenticated', reason: 'Session expired, please log in online' });
           return;
         }
 
-        // Valid cached session — allow offline open
         if (!cancelled) setState({ status: 'authenticated', session: cached });
 
-        // Ensure local shops table contains the cached shop for FK integrity (offline-first)
-        // This must happen even when offline, before any customer/service/order creation
         await upsertShop({
           id: cached.shop.id,
           name: cached.shop.name,
@@ -64,14 +65,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           rush_fee_centavos: cached.shop.rush_fee_centavos,
         }).catch(() => {});
 
-        // Optional background refresh (non-blocking) - update if server has newer shop data
+        // Non-blocking background refresh
         try {
           const fresh = await api.getShopMe(cached.token);
           const updatedShop = fresh.data.shop;
-          if (updatedShop.id !== cached.shop.id || updatedShop.name !== cached.shop.name) {
-            await setAuthSession({ ...cached, shop: updatedShop });
-            if (!cancelled) setState({ status: 'authenticated', session: { ...cached, shop: updatedShop } });
-          }
+          await setAuthSession({ ...cached, shop: updatedShop });
+          if (!cancelled) setState({ status: 'authenticated', session: { ...cached, shop: updatedShop } });
           await upsertShop({
             id: updatedShop.id,
             name: updatedShop.name,
@@ -82,7 +81,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             rush_fee_centavos: updatedShop.rush_fee_centavos,
           }).catch(() => {});
         } catch {
-          // offline or server down — keep cached session (already upserted above)
+          // Offline or server down — keep cached session
         }
       } catch (e) {
         if (!cancelled) setState({ status: 'unauthenticated', reason: e instanceof Error ? e.message : String(e) });
@@ -108,7 +107,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       });
     } catch {}
     setState({ status: 'authenticated', session });
-    // Trigger background sync after login/register (non-blocking, respects offline)
     try {
       const { runSync } = await import('@/sync/engine');
       runSync(session.shop.id, session.token).catch(() => {});
@@ -117,7 +115,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const login = useCallback(
     async (email: string, password: string) => {
-      // Must be online; api will throw if offline
       const res = await api.login({ email: email.trim().toLowerCase(), password });
       await persistSession({ token: res.data.token, user: res.data.user, shop: res.data.shop });
     },
@@ -139,7 +136,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const logout = useCallback(async () => {
     await clearAuthSession();
-    // Important: do NOT delete laundry data (customers/services/orders/payments)
+    // Preserve local laundry data (offline PENDING records remain safe)
     setState({ status: 'unauthenticated' });
   }, []);
 
@@ -148,8 +145,53 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const fresh = await api.getShopMe(state.session.token);
     const updated = { ...state.session, shop: fresh.data.shop };
     await setAuthSession(updated);
+    await upsertShop({
+      id: fresh.data.shop.id,
+      name: fresh.data.shop.name,
+      owner_name: fresh.data.shop.owner_name,
+      contact_number: fresh.data.shop.contact_number,
+      address: fresh.data.shop.address,
+      currency: fresh.data.shop.currency,
+      rush_fee_centavos: fresh.data.shop.rush_fee_centavos,
+    }).catch(() => {});
     setState({ status: 'authenticated', session: updated });
   }, [state]);
+
+  const updateShop = useCallback(
+    async (patch: {
+      name?: string;
+      owner_name?: string | null;
+      contact_number?: string | null;
+      address?: string | null;
+      rush_fee_centavos?: number;
+    }) => {
+      if (state.status !== 'authenticated') throw new Error('Not authenticated');
+      let nextShop = {
+        ...state.session.shop,
+        ...patch,
+        updated_at: new Date().toISOString(),
+      };
+      try {
+        const res = await api.updateShopMe(patch, state.session.token);
+        nextShop = res.data.shop;
+      } catch {
+        // Offline fallback — persist locally in SQLite + SecureStore
+      }
+      await upsertShop({
+        id: nextShop.id,
+        name: nextShop.name,
+        owner_name: nextShop.owner_name,
+        contact_number: nextShop.contact_number,
+        address: nextShop.address,
+        currency: nextShop.currency,
+        rush_fee_centavos: nextShop.rush_fee_centavos,
+      });
+      const updated = { ...state.session, shop: nextShop };
+      await setAuthSession(updated);
+      setState({ status: 'authenticated', session: updated });
+    },
+    [state]
+  );
 
   const value = useMemo<AuthContextValue>(
     () => ({
@@ -158,8 +200,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       register,
       logout,
       refreshShop,
+      updateShop,
     }),
-    [state, login, register, logout, refreshShop]
+    [state, login, register, logout, refreshShop, updateShop]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

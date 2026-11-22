@@ -1,10 +1,23 @@
 import { useState } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import {
+  Alert,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { useAuthSession } from '@/context/AuthContext';
+import { initDatabase } from '@/db/client';
+import { createService } from '@/db/repositories/services';
 import type { PricingType } from '@/db/types';
-import { serviceStore } from '@/store/serviceStore';
+import { useToast } from '@/components/Toast';
 
 const pricingOptions: { value: PricingType; label: string }[] = [
   { value: 'per_load', label: 'Per Load' },
@@ -14,114 +27,138 @@ const pricingOptions: { value: PricingType; label: string }[] = [
 ];
 
 export default function ServiceAddScreen() {
+  const session = useAuthSession();
+  const toast = useToast();
   const [name, setName] = useState('');
   const [pricingType, setPricingType] = useState<PricingType>('per_load');
   const [price, setPrice] = useState('160');
   const [weightBlockKg, setWeightBlockKg] = useState('8');
   const [description, setDescription] = useState('');
+  const [saving, setSaving] = useState(false);
 
-  const handleSave = () => {
+  const handleSave = async () => {
+    if (!session) {
+      Alert.alert('Session Required', 'Please log in first.');
+      return;
+    }
     if (!name.trim()) {
       Alert.alert('Required', 'Please enter a service name.');
       return;
     }
     const val = parseFloat(price);
-    if (isNaN(val) || val <= 0) {
+    if (isNaN(val) || val < 0) {
       Alert.alert('Invalid Price', 'Please enter a valid rate.');
       return;
     }
-    const unitPriceCentavos = Math.round(val * 100);
-    const blockKgVal = parseFloat(weightBlockKg);
-    const weightBlockGrams = pricingType === 'per_load' && !isNaN(blockKgVal) ? Math.round(blockKgVal * 1000) : undefined;
+    let weightBlockGrams: number | null = null;
+    if (pricingType === 'per_load') {
+      const blockKgVal = parseFloat(weightBlockKg);
+      if (isNaN(blockKgVal) || blockKgVal < 1 || blockKgVal > 50) {
+        Alert.alert('Invalid Weight Block', 'Max weight per load must be between 1 and 50 kg.');
+        return;
+      }
+      weightBlockGrams = Math.round(blockKgVal * 1000);
+    }
 
-    serviceStore.create({
-      name: name.trim(),
-      pricing_type: pricingType,
-      unit_price_centavos: unitPriceCentavos,
-      weight_block_grams: weightBlockGrams,
-      description: description.trim() || undefined,
-    });
-
-    router.back();
+    setSaving(true);
+    try {
+      await initDatabase();
+      await createService({
+        shop_id: session.shop.id,
+        name: name.trim(),
+        pricing_type: pricingType,
+        unit_price_centavos: Math.round(val * 100),
+        weight_block_grams: weightBlockGrams,
+        description: description.trim() || null,
+      });
+      toast.show('Service saved', 'success');
+      router.back();
+    } catch (e) {
+      Alert.alert('Cannot Save Service', e instanceof Error ? e.message : 'Unable to create service.');
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-        <View style={styles.header}>
-          <Pressable onPress={() => router.back()} style={styles.backButton}>
-            <Ionicons name="chevron-back" size={20} color="#1d4ed8" />
-            <Text style={styles.backText}>Back</Text>
-          </Pressable>
-          <Text style={styles.title}>New Service</Text>
-          <View style={{ width: 50 }} />
-        </View>
-
-        <View style={styles.card}>
-          <Text style={styles.label}>Service Name</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="e.g. Wash & Fold"
-            placeholderTextColor="#94a3b8"
-            value={name}
-            onChangeText={setName}
-          />
-
-          <Text style={styles.label}>Pricing Model</Text>
-          <View style={styles.optionRow}>
-            {pricingOptions.map((opt) => {
-              const active = pricingType === opt.value;
-              return (
-                <Pressable
-                  key={opt.value}
-                  onPress={() => setPricingType(opt.value)}
-                  style={[styles.optionChip, active && styles.optionChipActive]}
-                >
-                  <Text style={[styles.optionText, active && styles.optionTextActive]}>{opt.label}</Text>
-                </Pressable>
-              );
-            })}
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
+        <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+          <View style={styles.header}>
+            <Pressable onPress={() => router.back()} style={styles.backButton}>
+              <Ionicons name="chevron-back" size={20} color="#1d4ed8" />
+              <Text style={styles.backText}>Back</Text>
+            </Pressable>
+            <Text style={styles.title}>New Service</Text>
+            <View style={{ width: 50 }} />
           </View>
 
-          <Text style={styles.label}>Rate (₱)</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="0.00"
-            placeholderTextColor="#94a3b8"
-            value={price}
-            onChangeText={setPrice}
-            keyboardType="decimal-pad"
-          />
+          <View style={styles.card}>
+            <Text style={styles.label}>Service Name *</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="e.g. Wash & Fold"
+              placeholderTextColor="#94a3b8"
+              value={name}
+              onChangeText={setName}
+            />
 
-          {pricingType === 'per_load' && (
-            <>
-              <Text style={styles.label}>Max Weight per Load (kg)</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="8"
-                placeholderTextColor="#94a3b8"
-                value={weightBlockKg}
-                onChangeText={setWeightBlockKg}
-                keyboardType="decimal-pad"
-              />
-            </>
-          )}
+            <Text style={styles.label}>Pricing Model</Text>
+            <View style={styles.optionRow}>
+              {pricingOptions.map((opt) => {
+                const active = pricingType === opt.value;
+                return (
+                  <Pressable
+                    key={opt.value}
+                    onPress={() => setPricingType(opt.value)}
+                    style={[styles.optionChip, active && styles.optionChipActive]}
+                  >
+                    <Text style={[styles.optionText, active && styles.optionTextActive]}>{opt.label}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
 
-          <Text style={styles.label}>Description</Text>
-          <TextInput
-            style={[styles.input, styles.multiline]}
-            placeholder="Optional service notes..."
-            placeholderTextColor="#94a3b8"
-            value={description}
-            onChangeText={setDescription}
-            multiline
-          />
+            <Text style={styles.label}>Rate (₱) *</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="0.00"
+              placeholderTextColor="#94a3b8"
+              value={price}
+              onChangeText={setPrice}
+              keyboardType="decimal-pad"
+            />
 
-          <Pressable onPress={handleSave} style={styles.button}>
-            <Text style={styles.buttonText}>Save Service</Text>
-          </Pressable>
-        </View>
-      </ScrollView>
+            {pricingType === 'per_load' && (
+              <>
+                <Text style={styles.label}>Max Weight per Load (kg, 1–50)</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="8"
+                  placeholderTextColor="#94a3b8"
+                  value={weightBlockKg}
+                  onChangeText={setWeightBlockKg}
+                  keyboardType="decimal-pad"
+                />
+              </>
+            )}
+
+            <Text style={styles.label}>Description</Text>
+            <TextInput
+              style={[styles.input, styles.multiline]}
+              placeholder="Optional service notes..."
+              placeholderTextColor="#94a3b8"
+              value={description}
+              onChangeText={setDescription}
+              multiline
+            />
+
+            <Pressable onPress={handleSave} disabled={saving} style={[styles.button, saving && styles.buttonDisabled]}>
+              <Text style={styles.buttonText}>{saving ? 'Saving...' : 'Save Service'}</Text>
+            </Pressable>
+          </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -165,5 +202,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginTop: 22,
   },
+  buttonDisabled: { opacity: 0.6 },
   buttonText: { color: '#ffffff', fontSize: 15, fontWeight: '600' },
 });

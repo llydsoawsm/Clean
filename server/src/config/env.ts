@@ -20,6 +20,13 @@ function requireJwtSecret(value: string | undefined): string {
   return secret;
 }
 
+function parseTzOffsetMinutes(value: string | undefined): number {
+  if (value === undefined || value.trim() === '') return 480; // Default Asia/Manila (UTC+8)
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < -720 || parsed > 840) return 480;
+  return parsed;
+}
+
 export const config = {
   port: positivePort(process.env.PORT),
   host: process.env.HOST ?? '0.0.0.0',
@@ -27,4 +34,6 @@ export const config = {
   databasePath: process.env.DATABASE_PATH ?? './storage/clean.sqlite',
   jwtSecret: requireJwtSecret(process.env.JWT_SECRET),
   jwtExpiresIn: process.env.JWT_EXPIRES_IN ?? '7d',
+  corsOrigin: process.env.CORS_ORIGIN?.trim() || '*',
+  defaultTzOffsetMinutes: parseTzOffsetMinutes(process.env.DEFAULT_TZ_OFFSET_MINUTES),
 };

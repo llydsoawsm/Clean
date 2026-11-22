@@ -1,24 +1,45 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { FlatList, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { customerStore, CustomerItem } from '@/store/customerStore';
+import { useAuthSession } from '@/context/AuthContext';
+import { initDatabase } from '@/db/client';
+import { searchCustomers } from '@/db/repositories/customers';
+import type { CustomerRow } from '@/db/types';
+import { EmptyState, LoadingState } from '@/components/Feedback';
 
 export default function CustomersScreen() {
+  const session = useAuthSession();
   const [query, setQuery] = useState('');
-  const [customers, setCustomers] = useState<CustomerItem[]>(customerStore.getAll());
+  const [customers, setCustomers] = useState<CustomerRow[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(
+    async (searchText: string) => {
+      if (!session) return;
+      try {
+        await initDatabase();
+        const rows = await searchCustomers(searchText, session.shop.id);
+        setCustomers(rows);
+      } catch (e) {
+        console.warn('[Customers] load error:', e);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [session]
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      void load(query);
+    }, [load, query])
+  );
 
   useEffect(() => {
-    const unsub = customerStore.subscribe(() => {
-      setCustomers(customerStore.search(query));
-    });
-    return unsub;
-  }, [query]);
-
-  useEffect(() => {
-    setCustomers(customerStore.search(query));
-  }, [query]);
+    void load(query);
+  }, [load, query]);
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -44,49 +65,61 @@ export default function CustomersScreen() {
         />
       </View>
 
-      <FlatList
-        data={customers}
-        keyExtractor={(item) => item.id}
-        contentContainerStyle={styles.listContent}
-        showsVerticalScrollIndicator={false}
-        renderItem={({ item }) => (
-          <View style={styles.card}>
-            <Pressable
-              onPress={() => router.push({ pathname: '/customer-detail' as any, params: { id: item.id } })}
-              style={styles.cardMain}
-            >
-              <View style={styles.cardLeft}>
-                <View style={styles.avatar}>
-                  <Ionicons name="person-outline" size={18} color="#1d4ed8" />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.name}>{item.name}</Text>
-                  {item.contact_number ? <Text style={styles.contact}>{item.contact_number}</Text> : null}
-                  {item.address ? <Text style={styles.address}>{item.address}</Text> : null}
-                </View>
-              </View>
-            </Pressable>
-
-            <View style={styles.cardActions}>
-              <Pressable
-                onPress={() => router.push({ pathname: '/receive' as any, params: { customerId: item.id } })}
-                style={styles.newOrderBtn}
-              >
-                <Ionicons name="add-circle-outline" size={14} color="#1d4ed8" />
-                <Text style={styles.newOrderText}>New Order</Text>
-              </Pressable>
-
+      {loading ? (
+        <LoadingState message="Loading customers..." />
+      ) : (
+        <FlatList
+          data={customers}
+          keyExtractor={(item) => item.id}
+          contentContainerStyle={styles.listContent}
+          showsVerticalScrollIndicator={false}
+          ListEmptyComponent={
+            <EmptyState
+              title="No Customers Yet"
+              hint={query.trim() ? 'No matching customers found.' : 'Add your first customer to start receiving laundry.'}
+              actionLabel={!query.trim() ? 'Add Customer' : undefined}
+              onAction={!query.trim() ? () => router.push('/customer-add' as any) : undefined}
+            />
+          }
+          renderItem={({ item }) => (
+            <View style={styles.card}>
               <Pressable
                 onPress={() => router.push({ pathname: '/customer-detail' as any, params: { id: item.id } })}
-                style={styles.detailsBtn}
+                style={styles.cardMain}
               >
-                <Text style={styles.detailsText}>Profile</Text>
-                <Ionicons name="chevron-forward" size={14} color="#64748b" />
+                <View style={styles.cardLeft}>
+                  <View style={styles.avatar}>
+                    <Ionicons name="person-outline" size={18} color="#1d4ed8" />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.name}>{item.name}</Text>
+                    {item.contact_number ? <Text style={styles.contact}>{item.contact_number}</Text> : null}
+                    {item.address ? <Text style={styles.address}>{item.address}</Text> : null}
+                  </View>
+                </View>
               </Pressable>
+
+              <View style={styles.cardActions}>
+                <Pressable
+                  onPress={() => router.push({ pathname: '/receive' as any, params: { customerId: item.id } })}
+                  style={styles.newOrderBtn}
+                >
+                  <Ionicons name="add-circle-outline" size={14} color="#1d4ed8" />
+                  <Text style={styles.newOrderText}>New Order</Text>
+                </Pressable>
+
+                <Pressable
+                  onPress={() => router.push({ pathname: '/customer-detail' as any, params: { id: item.id } })}
+                  style={styles.detailsBtn}
+                >
+                  <Text style={styles.detailsText}>Profile</Text>
+                  <Ionicons name="chevron-forward" size={14} color="#64748b" />
+                </Pressable>
+              </View>
             </View>
-          </View>
-        )}
-      />
+          )}
+        />
+      )}
     </SafeAreaView>
   );
 }

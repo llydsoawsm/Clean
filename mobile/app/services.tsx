@@ -1,30 +1,50 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { serviceStore, LocalService } from '@/store/serviceStore';
+import { useAuthSession } from '@/context/AuthContext';
+import { initDatabase } from '@/db/client';
+import { listServices } from '@/db/repositories/services';
+import type { ServiceRow } from '@/db/types';
+import { formatPHP } from '@/utils/money';
+import { EmptyState, LoadingState } from '@/components/Feedback';
 
-function priceLabel(row: LocalService): string {
-  const price = row.unit_price_centavos / 100;
+function priceLabel(row: ServiceRow): string {
+  const base = formatPHP(row.unit_price_centavos);
   if (row.pricing_type === 'per_load') {
     const blockKg = row.weight_block_grams ? row.weight_block_grams / 1000 : 8;
-    return `₱${price.toFixed(2)} / ${blockKg}kg`;
+    return `${base} / ${blockKg}kg`;
   }
-  const unit = row.pricing_type === 'per_kg' ? '/kg' : row.pricing_type === 'per_piece' ? '/piece' : '';
-  return `₱${price.toFixed(2)}${unit}`;
+  if (row.pricing_type === 'per_kg') return `${base}/kg`;
+  if (row.pricing_type === 'per_piece') return `${base}/piece`;
+  return `${base} fixed`;
 }
 
 export default function ServicesScreen() {
-  const [services, setServices] = useState<LocalService[]>(serviceStore.getAll());
+  const session = useAuthSession();
+  const [services, setServices] = useState<ServiceRow[]>([]);
   const [showInactive, setShowInactive] = useState(false);
+  const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    const unsub = serviceStore.subscribe(() => {
-      setServices(serviceStore.getAll());
-    });
-    return unsub;
-  }, []);
+  const load = useCallback(async () => {
+    if (!session) return;
+    try {
+      await initDatabase();
+      const rows = await listServices(session.shop.id, true);
+      setServices(rows);
+    } catch (e) {
+      console.warn('[Services] load error:', e);
+    } finally {
+      setLoading(false);
+    }
+  }, [session]);
+
+  useFocusEffect(
+    useCallback(() => {
+      void load();
+    }, [load])
+  );
 
   const displayed = showInactive ? services : services.filter((s) => s.is_active === 1);
 
@@ -50,31 +70,43 @@ export default function ServicesScreen() {
         </Pressable>
       </View>
 
-      <FlatList
-        data={displayed}
-        keyExtractor={(item) => item.id}
-        contentContainerStyle={styles.listContent}
-        showsVerticalScrollIndicator={false}
-        renderItem={({ item }) => (
-          <Pressable
-            onPress={() => router.push({ pathname: '/service-detail' as any, params: { id: item.id } })}
-            style={({ pressed }) => [styles.card, pressed && styles.cardPressed]}
-          >
-            <View style={styles.cardHeader}>
-              <Text style={styles.name}>{item.name}</Text>
-              <Text style={styles.price}>{priceLabel(item)}</Text>
-            </View>
-            {item.description ? <Text style={styles.desc}>{item.description}</Text> : null}
-            <View style={styles.footerRow}>
-              <View style={[styles.statusBadge, item.is_active ? styles.statusActive : styles.statusInactive]}>
-                <Text style={[styles.statusText, item.is_active ? styles.statusTextActive : styles.statusTextInactive]}>
-                  {item.is_active ? 'Active' : 'Archived'}
-                </Text>
+      {loading ? (
+        <LoadingState message="Loading services..." />
+      ) : (
+        <FlatList
+          data={displayed}
+          keyExtractor={(item) => item.id}
+          contentContainerStyle={styles.listContent}
+          showsVerticalScrollIndicator={false}
+          ListEmptyComponent={
+            <EmptyState
+              title="No Services Found"
+              hint="Add laundry services (per load, per kg, per piece, or fixed) to receive orders."
+              actionLabel="Add Service"
+              onAction={() => router.push('/service-add' as any)}
+            />
+          }
+          renderItem={({ item }) => (
+            <Pressable
+              onPress={() => router.push({ pathname: '/service-detail' as any, params: { id: item.id } })}
+              style={({ pressed }) => [styles.card, pressed && styles.cardPressed]}
+            >
+              <View style={styles.cardHeader}>
+                <Text style={styles.name}>{item.name}</Text>
+                <Text style={styles.price}>{priceLabel(item)}</Text>
               </View>
-            </View>
-          </Pressable>
-        )}
-      />
+              {item.description ? <Text style={styles.desc}>{item.description}</Text> : null}
+              <View style={styles.footerRow}>
+                <View style={[styles.statusBadge, item.is_active ? styles.statusActive : styles.statusInactive]}>
+                  <Text style={[styles.statusText, item.is_active ? styles.statusTextActive : styles.statusTextInactive]}>
+                    {item.is_active ? 'Active' : 'Archived'}
+                  </Text>
+                </View>
+              </View>
+            </Pressable>
+          )}
+        />
+      )}
     </SafeAreaView>
   );
 }
@@ -112,10 +144,7 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     backgroundColor: '#ffffff',
   },
-  chipActive: {
-    backgroundColor: '#1d4ed8',
-    borderColor: '#1d4ed8',
-  },
+  chipActive: { backgroundColor: '#1d4ed8', borderColor: '#1d4ed8' },
   chipText: { color: '#64748b', fontSize: 12, fontWeight: '500' },
   chipTextActive: { color: '#ffffff', fontWeight: '600' },
   listContent: { padding: 18, paddingBottom: 40 },
@@ -128,8 +157,8 @@ const styles = StyleSheet.create({
     borderColor: '#e2e8f0',
   },
   cardPressed: { opacity: 0.7 },
-  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  name: { color: '#0f172a', fontSize: 14, fontWeight: '600' },
+  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
+  name: { color: '#0f172a', fontSize: 14, fontWeight: '600', flex: 1 },
   price: { color: '#1d4ed8', fontSize: 14, fontWeight: '700' },
   desc: { color: '#64748b', fontSize: 12, marginTop: 4 },
   footerRow: { marginTop: 8 },

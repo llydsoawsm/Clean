@@ -92,6 +92,7 @@ servicesRouter.post('/', async (req: AuthenticatedRequest, res, next) => {
         is_active: is_active ? 1 : 0,
         created_at: now,
         updated_at: now,
+        server_updated_at: now,
         is_deleted: 0,
       });
     } catch (err: unknown) {
@@ -130,7 +131,8 @@ servicesRouter.patch('/:id', async (req: AuthenticatedRequest, res, next) => {
     }
 
     const patch = parsed.data;
-    const nextRow: Record<string, unknown> = { updated_at: nowIso() };
+    const now = nowIso();
+    const nextRow: Record<string, unknown> = { updated_at: now, server_updated_at: now };
     if (patch.service_name !== undefined) nextRow.service_name = patch.service_name.trim();
     if (patch.pricing_type !== undefined) nextRow.pricing_type = patch.pricing_type;
     if (patch.price !== undefined) nextRow.price_centavos = toCentavos(patch.price);
@@ -178,7 +180,8 @@ servicesRouter.delete('/:id', async (req: AuthenticatedRequest, res, next) => {
       res.json({ success: true, data: { service: existing } });
       return;
     }
-    await database('services').where({ id }).update({ is_deleted: 1, is_active: 0, updated_at: nowIso() });
+    const now = nowIso();
+    await database('services').where({ id }).update({ is_deleted: 1, is_active: 0, updated_at: now, server_updated_at: now });
     const updated = await database('services').where({ id }).first();
     res.json({ success: true, data: { service: updated } });
   } catch (e) {

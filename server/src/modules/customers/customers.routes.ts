@@ -73,6 +73,7 @@ customersRouter.post('/', async (req: AuthenticatedRequest, res, next) => {
         notes: data.notes?.trim() || null,
         created_at: now,
         updated_at: now,
+        server_updated_at: now,
         is_deleted: 0,
       });
     } catch (err: unknown) {
@@ -108,16 +109,18 @@ customersRouter.patch('/:id', async (req: AuthenticatedRequest, res, next) => {
     }
 
     const patch = parsed.data;
+    const now = nowIso();
     const nextRow: Record<string, unknown> = {
-      updated_at: nowIso(),
+      updated_at: now,
+      server_updated_at: now,
     };
     if (patch.name !== undefined) nextRow.name = patch.name.trim();
     if (patch.contact_number !== undefined) nextRow.contact_number = patch.contact_number.trim();
     if (patch.address !== undefined) nextRow.address = patch.address?.trim() || null;
     if (patch.notes !== undefined) nextRow.notes = patch.notes?.trim() || null;
 
-    if (Object.keys(nextRow).length === 1) {
-      // only updated_at
+    if (Object.keys(nextRow).length === 2) {
+      // only timestamps
       res.json({ success: true, data: { customer: existing } });
       return;
     }
@@ -155,7 +158,8 @@ customersRouter.delete('/:id', async (req: AuthenticatedRequest, res, next) => {
     }
     // Check historical orders: if customer has orders, allow soft-delete but warn via tombstone
     // We allow soft-delete even with history (historical orders remain readable via snapshot)
-    await database('customers').where({ id }).update({ is_deleted: 1, updated_at: nowIso() });
+    const now = nowIso();
+    await database('customers').where({ id }).update({ is_deleted: 1, updated_at: now, server_updated_at: now });
     const updated = await database('customers').where({ id }).first();
     res.json({ success: true, data: { customer: updated } });
   } catch (e) {

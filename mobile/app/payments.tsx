@@ -1,29 +1,59 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { useAuthSession } from '@/context/AuthContext';
+import { initDatabase } from '@/db/client';
+import { displayMethod, getPaymentSummary, listOrdersWithBalance, listPayments } from '@/db/repositories/payments';
+import type { OrderRow, PaymentRow, PaymentStatus } from '@/db/types';
 import { formatPHP } from '@/utils/money';
-import { orderStore, LocalPayment, LocalOrder } from '@/store/orderStore';
+import { formatDate } from '@/utils/dates';
+import { LoadingState } from '@/components/Feedback';
+
+type PaymentListItem = PaymentRow & {
+  order_number: string;
+  customer_name: string | null;
+  order_total: number;
+  order_balance: number;
+  order_payment_status: PaymentStatus;
+};
 
 export default function PaymentsScreen() {
+  const session = useAuthSession();
   const [tab, setTab] = useState<'transactions' | 'balances'>('transactions');
-  const [payments, setPayments] = useState<LocalPayment[]>(orderStore.getAllPayments());
-  const [financials, setFinancials] = useState(orderStore.getFinancials());
-  const [pendingOrders, setPendingOrders] = useState<LocalOrder[]>(() =>
-    orderStore.getAll().filter((o) => o.balance_centavos > 0)
-  );
+  const [payments, setPayments] = useState<PaymentListItem[]>([]);
+  const [pendingOrders, setPendingOrders] = useState<OrderRow[]>([]);
+  const [financials, setFinancials] = useState({ collectedToday: 0, outstandingBalance: 0 });
+  const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    const sync = () => {
-      setPayments(orderStore.getAllPayments());
-      setFinancials(orderStore.getFinancials());
-      setPendingOrders(orderStore.getAll().filter((o) => o.balance_centavos > 0));
-    };
-    sync();
-    const unsub = orderStore.subscribe(sync);
-    return unsub;
-  }, []);
+  const load = useCallback(async () => {
+    if (!session) return;
+    try {
+      await initDatabase();
+      const [pays, summary, unpaid] = await Promise.all([
+        listPayments({ shop_id: session.shop.id, limit: 100 }),
+        getPaymentSummary(session.shop.id),
+        listOrdersWithBalance({ shop_id: session.shop.id, limit: 100 }),
+      ]);
+      setPayments(pays);
+      setFinancials({
+        collectedToday: summary.collectedToday,
+        outstandingBalance: summary.outstandingBalance,
+      });
+      setPendingOrders(unpaid);
+    } catch (e) {
+      console.warn('[Payments] load error:', e);
+    } finally {
+      setLoading(false);
+    }
+  }, [session]);
+
+  useFocusEffect(
+    useCallback(() => {
+      void load();
+    }, [load])
+  );
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -71,7 +101,9 @@ export default function PaymentsScreen() {
         </Pressable>
       </View>
 
-      {tab === 'transactions' ? (
+      {loading ? (
+        <LoadingState message="Loading payments..." />
+      ) : tab === 'transactions' ? (
         <FlatList
           data={payments}
           keyExtractor={(item) => item.id}
@@ -87,13 +119,16 @@ export default function PaymentsScreen() {
               onPress={() => router.push({ pathname: '/payment-detail' as any, params: { id: item.id } })}
               style={({ pressed }) => [styles.itemCard, pressed && styles.cardPressed]}
             >
-              <View>
-                <Text style={styles.customerName}>{item.customer_name}</Text>
-                <Text style={styles.metaText}>{item.order_number} • {item.method}</Text>
+              <View style={{ flex: 1, marginRight: 8 }}>
+                <Text style={styles.customerName}>{item.customer_name ?? 'Customer'}</Text>
+                <Text style={styles.metaText}>
+                  {item.order_number} • {displayMethod(item.method)}
+                  {item.reference ? ` • ${item.reference}` : ''}
+                </Text>
               </View>
               <View style={{ alignItems: 'flex-end' }}>
                 <Text style={styles.amountText}>+{formatPHP(item.amount_centavos)}</Text>
-                <Text style={styles.metaText}>{new Date(item.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
+                <Text style={styles.metaText}>{formatDate(item.created_at)}</Text>
               </View>
             </Pressable>
           )}
@@ -114,9 +149,11 @@ export default function PaymentsScreen() {
               onPress={() => router.push({ pathname: '/order-detail' as any, params: { id: item.id } })}
               style={({ pressed }) => [styles.itemCard, pressed && styles.cardPressed]}
             >
-              <View>
-                <Text style={styles.customerName}>{item.customer_name}</Text>
-                <Text style={styles.metaText}>{item.order_number} • Total {formatPHP(item.total_centavos)}</Text>
+              <View style={{ flex: 1, marginRight: 8 }}>
+                <Text style={styles.customerName}>{item.customer_name_snapshot ?? 'Customer'}</Text>
+                <Text style={styles.metaText}>
+                  {item.order_number} • Total {formatPHP(item.total_centavos)}
+                </Text>
               </View>
               <View style={{ alignItems: 'flex-end' }}>
                 <Text style={styles.balanceText}>{formatPHP(item.balance_centavos)}</Text>

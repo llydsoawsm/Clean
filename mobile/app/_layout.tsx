@@ -1,12 +1,11 @@
 import { Stack } from 'expo-router';
 import { AuthProvider } from '@/context/AuthContext';
-// import { useSyncOnForeground } from '@/sync/useSyncOnForeground';
+import { useSyncOnForeground } from '@/sync/useSyncOnForeground';
 import { ToastProvider } from '@/components/Toast';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 
 function SyncWrapper() {
-  // Functional logic commented out for UI design preview
-  // useSyncOnForeground();
+  useSyncOnForeground();
   return null;
 }
 

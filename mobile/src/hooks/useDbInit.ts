@@ -1,6 +1,6 @@
 /**
  * Hook to initialize Clean local DB on mount.
- * Idempotent, safe for offline.
+ * Idempotent, safe for offline. Does not seed or wipe user data.
  */
 import { useEffect, useState } from 'react';
 import { initDatabase } from '@/db/client';
@@ -15,8 +15,6 @@ export function useDbInit(): DbInitState {
     (async () => {
       try {
         await initDatabase();
-        const { ensureSeedData } = await import('@/db/seedDemo');
-        await ensureSeedData().catch((err) => console.warn('Seed fallback:', err));
         if (!cancelled) setState({ status: 'ready' });
       } catch (e) {
         if (!cancelled) setState({ status: 'error', message: e instanceof Error ? e.message : String(e) });

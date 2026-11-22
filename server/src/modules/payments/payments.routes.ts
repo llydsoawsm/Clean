@@ -1,25 +1,22 @@
 import { Router } from 'express';
 import { database } from '../../database/knex';
 import { authMiddleware, type AuthenticatedRequest } from '../../middleware/auth';
+import {
+  endOfDayIso,
+  resolveTzOffsetMinutes,
+  safeParseIso,
+  startOfDayIso,
+  startOfMonthIso,
+} from '../../utils/timezone';
 
 export const paymentsRouter = Router();
 paymentsRouter.use(authMiddleware);
 
-function startOfDay(d: Date): Date {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  return x;
-}
-function endOfDay(d: Date): Date {
-  const x = new Date(d);
-  x.setHours(23, 59, 59, 999);
-  return x;
-}
-
-// GET /api/v1/payments?status=UNPAID|PARTIAL|PAID&from=ISO&to=ISO&orderId=&search=&limit=50&dateFilter=today|7days|month|all
+// GET /api/v1/payments?status=UNPAID|PARTIAL|PAID&from=ISO&to=ISO&orderId=&search=&limit=50&dateFilter=today|7days|month|all&tzOffset=480
 paymentsRouter.get('/', async (req: AuthenticatedRequest, res, next) => {
   try {
     const shopId = req.auth!.shopId;
+    const tzOffset = resolveTzOffsetMinutes(req.query.tzOffset);
     const status = (req.query.status as string | undefined)?.trim().toUpperCase();
     const from = (req.query.from as string | undefined)?.trim();
     const to = (req.query.to as string | undefined)?.trim();
@@ -48,39 +45,39 @@ paymentsRouter.get('/', async (req: AuthenticatedRequest, res, next) => {
     if (orderId) {
       q = q.where('payments.order_id', orderId);
     }
-    // Date filters
+
     let fromDate: string | null = null;
     let toDate: string | null = null;
     if (from) {
-      const parsed = new Date(from);
-      if (Number.isNaN(parsed.getTime())) {
+      const parsed = safeParseIso(from);
+      if (!parsed) {
         res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Invalid "from" date' } });
         return;
       }
-      fromDate = parsed.toISOString();
+      fromDate = parsed;
     }
     if (to) {
-      const parsed = new Date(to);
-      if (Number.isNaN(parsed.getTime())) {
+      const parsed = safeParseIso(to);
+      if (!parsed) {
         res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Invalid "to" date' } });
         return;
       }
-      toDate = parsed.toISOString();
+      toDate = parsed;
     }
-    // dateFilter helpers
+
+    const now = new Date();
     if (dateFilter === 'today') {
-      fromDate = startOfDay(new Date()).toISOString();
-      toDate = endOfDay(new Date()).toISOString();
+      fromDate = startOfDayIso(now, tzOffset);
+      toDate = endOfDayIso(now, tzOffset);
     } else if (dateFilter === '7days') {
-      const d = new Date();
-      d.setDate(d.getDate() - 7);
-      fromDate = startOfDay(d).toISOString();
-      toDate = endOfDay(new Date()).toISOString();
+      const weekAgo = new Date(now.getTime() - 6 * 24 * 60 * 60 * 1000);
+      fromDate = startOfDayIso(weekAgo, tzOffset);
+      toDate = endOfDayIso(now, tzOffset);
     } else if (dateFilter === 'month') {
-      const now = new Date();
-      fromDate = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
-      toDate = endOfDay(now).toISOString();
+      fromDate = startOfMonthIso(now, tzOffset);
+      toDate = endOfDayIso(now, tzOffset);
     }
+
     if (fromDate) q = q.where('payments.created_at', '>=', fromDate);
     if (toDate) q = q.where('payments.created_at', '<=', toDate);
 
@@ -111,15 +108,17 @@ paymentsRouter.get('/', async (req: AuthenticatedRequest, res, next) => {
   }
 });
 
-// GET /api/v1/payments/summary
+// GET /api/v1/payments/summary?tzOffset=480
 paymentsRouter.get('/summary', async (req: AuthenticatedRequest, res, next) => {
   try {
     const shopId = req.auth!.shopId;
+    const tzOffset = resolveTzOffsetMinutes(req.query.tzOffset);
+    const now = new Date();
 
-    const todayStart = startOfDay(new Date()).toISOString();
-    const todayEnd = endOfDay(new Date()).toISOString();
-    const weekStart = startOfDay(new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)).toISOString();
-    const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString();
+    const todayStart = startOfDayIso(now, tzOffset);
+    const todayEnd = endOfDayIso(now, tzOffset);
+    const weekStart = startOfDayIso(new Date(now.getTime() - 6 * 24 * 60 * 60 * 1000), tzOffset);
+    const monthStart = startOfMonthIso(now, tzOffset);
 
     const collectedTodayRow = (await database('payments')
       .where({ shop_id: shopId, is_deleted: 0 })
@@ -130,11 +129,13 @@ paymentsRouter.get('/summary', async (req: AuthenticatedRequest, res, next) => {
     const collectedWeekRow = (await database('payments')
       .where({ shop_id: shopId, is_deleted: 0 })
       .where('created_at', '>=', weekStart)
+      .where('created_at', '<=', todayEnd)
       .sum('amount_centavos as total')
       .first()) as unknown as { total: number | string | null } | undefined;
     const collectedMonthRow = (await database('payments')
       .where({ shop_id: shopId, is_deleted: 0 })
       .where('created_at', '>=', monthStart)
+      .where('created_at', '<=', todayEnd)
       .sum('amount_centavos as total')
       .first()) as unknown as { total: number | string | null } | undefined;
 
@@ -192,7 +193,6 @@ paymentsRouter.get('/:id', async (req: AuthenticatedRequest, res, next) => {
       res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Payment not found' } });
       return;
     }
-    // Also fetch order for navigation
     const order = await database('orders').where({ id: payment.order_id, shop_id: shopId }).first();
     res.json({ success: true, data: { payment, order } });
   } catch (e) {
